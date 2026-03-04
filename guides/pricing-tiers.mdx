@@ -1,0 +1,225 @@
+---
+title: Pricing Tiers
+description: Four pricing tiers with usage limits and feature access control
+---
+
+## Overview
+
+Genie Helper offers four pricing tiers designed to scale from individual creators to professional studios. Each tier has specific usage limits based on server resource costs and operational overhead.
+
+## Pricing Structure
+
+| Tier | Monthly Cost | Target User | Key Feature |
+|------|--------------|-------------|-------------|
+| **Starter** | $0 | Trial users | Basic platform access, no video |
+| **Creator** | $49 | Individual creators | Unlimited scheduling, 3 platforms |
+| **Pro** | $149 | Power users | Unlimited publishing, 6 platforms |
+| **Studio** | $499 | Teams & agencies | 5 team seats, all 9 platforms |
+
+## Cost Basis
+
+- **Server**: $100/mo fixed (IONOS dedicated, self-hosted)
+- **LLM inference**: CPU-bound Qwen2.5 7B ~2-5s/call, ~4.8GB RAM pinned
+- **Stagehand sessions**: ~300MB RAM/active browser session → ~33 concurrent sessions ceiling
+- **FFmpeg clip generation**: ~30s CPU per clip (primary bottleneck)
+- **Watermark operations**: ~100ms (Sharp/ImageMagick, effectively zero cost)
+- **Platform universe**: 9 total platforms supported
+
+## Tier Limits Comparison
+
+<Note>
+  `-1` indicates unlimited usage
+</Note>
+
+### Starter (Free)
+
+Ideal for testing the platform with minimal resource commitment.
+
+| Feature | Limit | Reasoning |
+|---------|-------|----------|
+| **AI-Assisted Posts** | 3 | Taste of LLM capability, minimal CPU load |
+| **Posts Published** | 5 | Not a production workflow, just testing |
+| **Scheduled Queue Size** | 3 | Friction mechanic — forces frequent logins |
+| **Platforms Connected** | 1 | Single platform test connection |
+| **Taxonomy AI Calls** | 5 | Teaser of proprietary classification |
+| **Watermark Operations** | Unlimited | Zero cost — drug dealer hook |
+| **AI Clip Operations** | 0 | Video blocked (CSAM risk + bandwidth) |
+| **Thumbnail Operations** | 0 | Requires video frame extraction |
+| **Team Seats** | 1 | Solo only |
+
+### Creator ($49/mo)
+
+Built for individual creators managing multiple platforms daily.
+
+| Feature | Limit | Reasoning |
+|---------|-------|----------|
+| **AI-Assisted Posts** | 30 | ~1 per day, acceptable CPU load |
+| **Posts Published** | 90 | 3 platforms × ~1/day = 90 |
+| **Scheduled Queue Size** | Unlimited | **Primary upgrade hook** from Starter |
+| **Platforms Connected** | 3 | Most creators focus on 2-3 platforms |
+| **Taxonomy AI Calls** | 75 | ~2.5 per day for content classification |
+| **Watermark Operations** | Unlimited | Zero marginal cost |
+| **AI Clip Operations** | 10 | Aligns with 5GB storage (~500MB avg clip) |
+| **Thumbnail Operations** | Unlimited | Cheap FFmpeg frame extract |
+| **Team Seats** | 1 | Solo creator |
+
+### Pro ($149/mo)
+
+Power users with high publishing volume across multiple platforms.
+
+| Feature | Limit | Reasoning |
+|---------|-------|----------|
+| **AI-Assisted Posts** | 150 | Heavy user load, self-hosted can handle |
+| **Posts Published** | Unlimited | Zero marginal Stagehand cost once connected |
+| **Scheduled Queue Size** | Unlimited | No artificial friction |
+| **Platforms Connected** | 6 | 2/3 of platform universe |
+| **Taxonomy AI Calls** | 300 | Heavy classification usage |
+| **Watermark Operations** | Unlimited | Zero marginal cost |
+| **AI Clip Operations** | 50 | Aligns with 50GB storage |
+| **Thumbnail Operations** | Unlimited | Cheap operation |
+| **Team Seats** | 1 | Still solo operation |
+
+### Studio ($499/mo)
+
+Full-featured tier for teams and agencies managing multiple creators.
+
+| Feature | Limit | Reasoning |
+|---------|-------|----------|
+| **AI-Assisted Posts** | Unlimited | At $499 they're effectively paying for server |
+| **Posts Published** | Unlimited | No restrictions |
+| **Scheduled Queue Size** | Unlimited | Professional workflow support |
+| **Platforms Connected** | 9 | Full platform universe |
+| **Taxonomy AI Calls** | Unlimited | No restrictions |
+| **Watermark Operations** | Unlimited | Zero marginal cost |
+| **AI Clip Operations** | Unlimited | Full video processing access |
+| **Thumbnail Operations** | Unlimited | No restrictions |
+| **Team Seats** | 5 | **Anchor differentiator** for Studio tier |
+
+## Usage Limits JSON Schema
+
+This configuration is stored in Directus and enforced server-side:
+
+```json
+{
+  "starter": {
+    "posts_ai_assisted": 3,
+    "posts_published": 5,
+    "scheduled_queue_size": 3,
+    "platforms_connected": 1,
+    "taxonomy_ai_calls": 5,
+    "watermark_ops": -1,
+    "ai_clip_ops": 0,
+    "thumbnail_ops": 0,
+    "team_seats": 1
+  },
+  "creator": {
+    "posts_ai_assisted": 30,
+    "posts_published": 90,
+    "scheduled_queue_size": -1,
+    "platforms_connected": 3,
+    "taxonomy_ai_calls": 75,
+    "watermark_ops": -1,
+    "ai_clip_ops": 10,
+    "thumbnail_ops": -1,
+    "team_seats": 1
+  },
+  "pro": {
+    "posts_ai_assisted": 150,
+    "posts_published": -1,
+    "scheduled_queue_size": -1,
+    "platforms_connected": 6,
+    "taxonomy_ai_calls": 300,
+    "watermark_ops": -1,
+    "ai_clip_ops": 50,
+    "thumbnail_ops": -1,
+    "team_seats": 1
+  },
+  "studio": {
+    "posts_ai_assisted": -1,
+    "posts_published": -1,
+    "scheduled_queue_size": -1,
+    "platforms_connected": 9,
+    "taxonomy_ai_calls": -1,
+    "watermark_ops": -1,
+    "ai_clip_ops": -1,
+    "thumbnail_ops": -1,
+    "team_seats": 5
+  }
+}
+```
+
+## Important Implementation Notes
+
+<Warning>
+  Review these carefully before implementing tier enforcement
+</Warning>
+
+### 1. Thumbnail Operations on Starter
+
+`thumbnail_ops` on Starter is **0, not -1**. Thumbnails require video frame extraction. Since video is blocked on Starter (CSAM risk + cost), thumbnails must also be blocked.
+
+**Wrong**: `"thumbnail_ops": -1` (accidentally enables video processing)
+**Correct**: `"thumbnail_ops": 0` (properly blocks video operations)
+
+### 2. Posts Published Counting
+
+The current implementation treats **one publish event = one content piece** regardless of how many platforms it's pushed to simultaneously.
+
+**Example**:
+- User schedules 1 post to 3 platforms simultaneously = 1 count
+- User schedules 3 separate posts to 1 platform = 3 counts
+
+If you count per-platform-delivery instead, Creator at 90 posts becomes restrictive (3 platforms × 30 posts = only 30 pieces of content).
+
+<Note>
+  Document your counting convention clearly to avoid support tickets
+</Note>
+
+### 3. Team Seats on Studio
+
+Studio tier includes **5 team seats**. You need a per-seat cost model for additional seats, or subscribers will onboard entire teams.
+
+**Recommended overage pricing**:
+- Additional seats: +$25/seat/month
+- Or: Hard cap at 5 seats, require custom enterprise pricing
+
+## Usage Tracking
+
+Usage is tracked in the `user_personas` collection and enforced by:
+
+- **API endpoint**: `server/endpoints/api/usage.js`
+- **Enforcement**: Each operation checks current usage vs. tier limits
+- **Reset period**: Monthly, on billing anniversary
+- **Storage**: `user_personas.usage_current_period` JSON field
+
+### Usage API Example
+
+```javascript
+const usage = await api.get('/api/usage/current');
+
+if (usage.posts_ai_assisted >= usage.tier_limits.posts_ai_assisted) {
+  throw new Error('Monthly AI post limit reached. Upgrade to continue.');
+}
+```
+
+## Upgrade Flow
+
+1. **User initiates upgrade**: From pricing page or usage limit warning
+2. **Payment processing**: (Integration TBD — Stripe/Paddle)
+3. **Tier update**: PATCH `user_personas.pricing_tier`
+4. **Usage reset**: Clear current period counters
+5. **Immediate access**: New limits take effect instantly
+
+## Downgrade Considerations
+
+- **Graceful degradation**: Existing scheduled posts remain in queue
+- **Connection preservation**: Platform connections stay active, new ones blocked
+- **Data retention**: All media and history preserved
+- **Immediate enforcement**: New limits apply at start of next billing period
+
+## Related Files
+
+- **Usage tracking**: `server/endpoints/api/usage.js`
+- **Tier enforcement**: Applied in `genieChat.js`, `queue.js`, `credentials.js`
+- **Frontend pricing**: `dashboard/src/pages/Pricing/index.jsx`
+- **User personas**: Directus `user_personas` collection stores current tier

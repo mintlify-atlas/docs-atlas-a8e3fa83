@@ -1,97 +1,277 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Genie Helper"
+mode: "custom"
 ---
 
-## Setting up
+<div className="relative overflow-hidden bg-gradient-to-br from-[#1c398e] via-[#0069a8] to-[#401f6b] dark:from-[#1a0b2e] dark:via-[#0069a8] dark:to-[#401f6b] py-20">
+  <div className="max-w-6xl mx-auto px-6 lg:px-8">
+    <div className="grid lg:grid-cols-12 gap-8 items-center">
+      <div className="lg:col-span-7">
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white dark:text-white mb-6">
+          AI-powered creator operations platform
+        </h1>
+        <p className="text-lg sm:text-xl text-white/90 dark:text-gray-300 max-w-2xl mb-8">
+          Self-hosted, uncensored AI agent platform for adult content creators. Automate your workflows with MCP-first architecture, browser automation, and multi-platform management.
+        </p>
+        <div className="flex flex-wrap gap-4">
+          <a 
+            href="/quickstart"
+            className="inline-flex items-center px-6 py-3 rounded-lg bg-[#485697] hover:bg-[#543182] text-white font-semibold transition-colors no-underline"
+          >
+            Get started
+            <svg className="ml-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+            </svg>
+          </a>
+          <a 
+            href="/architecture"
+            className="inline-flex items-center px-6 py-3 rounded-lg border-2 border-white/30 bg-white/10 hover:bg-white/20 text-white font-semibold transition-colors no-underline"
+          >
+            View architecture
+          </a>
+        </div>
+      </div>
+      <div className="lg:col-span-5 hidden lg:block">
+        <div className="relative">
+          <img 
+            src="https://media.brand.dev/47d7b05d-b912-4d40-b098-56f922f521ce.png" 
+            alt="Genie Helper logo" 
+            noZoom
+            className="w-full h-auto max-w-md mx-auto"
+          />
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-Get your documentation site up and running in minutes.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+    Quick start
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Get your self-hosted AI platform running in minutes
+  </p>
+  
+  <Steps>
+    <Step title="Clone and install dependencies">
+      Clone the repository and install all required dependencies for the platform.
+      
+      ```bash
+      git clone https://github.com/Kismetkanceled/geniehelper.git
+      cd geniehelper
+      npm install
+      ```
+    </Step>
+    
+    <Step title="Configure environment variables">
+      Set up your environment variables for Directus, AnythingLLM, and credential encryption.
+      
+      ```bash
+      # Required environment variables
+      DIRECTUS_URL=http://127.0.0.1:8055
+      DIRECTUS_ADMIN_TOKEN=your-admin-token
+      CREDENTIALS_ENC_KEY_B64=your-base64-encoded-32-byte-key
+      ```
+      
+      <Note>
+        Generate your encryption key with: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`
+      </Note>
+    </Step>
+    
+    <Step title="Start all services">
+      Launch all services using PM2 or your preferred process manager.
+      
+      ```bash
+      # Start all services
+      pm2 start anything-llm
+      pm2 start agentx-cms
+      pm2 start genie-dashboard
+      pm2 start media-worker
+      ```
+      
+      Your platform will be available at `http://localhost:3100` with the API at `http://localhost:3001`.
+    </Step>
+    
+    <Step title="Connect your first platform">
+      Use the browser extension or manual cookie import to connect your creator platform accounts.
+      
+      <Accordion title="See example response">
+        After successful connection, you'll see your platform listed in the dashboard with scraping capabilities enabled.
+      </Accordion>
+    </Step>
+  </Steps>
+</div>
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
-  </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
-  </Card>
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+    Core features
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Everything you need to automate your creator operations
+  </p>
+  
+  <CardGroup cols={3}>
     <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
+      title="MCP-first AI agent"
+      icon="robot"
+      href="/ai/mcp-servers"
+    >
+      29 tools across Directus, Ollama, and Stagehand for comprehensive automation
+    </Card>
+    <Card
+      title="Browser automation"
+      icon="window"
+      href="/integrations/stagehand"
+    >
+      Automated platform scraping and content publishing with Playwright
+    </Card>
+    <Card
+      title="Content classification"
+      icon="tags"
+      href="/ai/taxonomy-system"
+    >
+      AI-powered taxonomy system with 6 concepts and 3,208 classified tags
+    </Card>
+    <Card
+      title="Media processing"
+      icon="wand-magic-sparkles"
+      href="/features/media-processing"
+    >
+      Watermarking, teaser generation, and video compression pipeline
+    </Card>
+    <Card
+      title="Post scheduling"
+      icon="calendar"
+      href="/features/post-scheduling"
+    >
+      Cross-platform publishing with intelligent scheduling
+    </Card>
+    <Card
+      title="Analytics & insights"
+      icon="chart-line"
+      href="/features/analytics"
+    >
+      Fan engagement tracking and performance metrics
+    </Card>
+  </CardGroup>
+</div>
 
-## Create beautiful pages
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+    Explore by topic
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Deep dive into specific areas of the platform
+  </p>
+  
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <a href="/deployment/installation" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#485697] dark:hover:border-[#485697] overflow-hidden no-underline transition-colors">
+      <div className="h-56 bg-gradient-to-br from-[#485697] to-[#543182] flex items-center justify-center overflow-hidden">
+        <svg className="w-24 h-24 text-white/80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+        </svg>
+      </div>
+      <div className="p-6 bg-white dark:bg-[#1a1d27]">
+        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-2">
+          Deployment guide
+        </h3>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          Complete installation and configuration instructions for self-hosting
+        </p>
+        <div className="flex items-center text-sm font-medium text-[#485697] group-hover:text-[#543182]">
+          Learn more
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </div>
+    </a>
+    
+    <a href="/api/overview" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#485697] dark:hover:border-[#485697] overflow-hidden no-underline transition-colors">
+      <div className="h-56 bg-gradient-to-br from-[#0069a8] to-[#485697] flex items-center justify-center overflow-hidden">
+        <svg className="w-24 h-24 text-white/80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+        </svg>
+      </div>
+      <div className="p-6 bg-white dark:bg-[#1a1d27]">
+        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-2">
+          API reference
+        </h3>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          Complete API documentation for custom integrations and extensions
+        </p>
+        <div className="flex items-center text-sm font-medium text-[#485697] group-hover:text-[#543182]">
+          Explore API
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </div>
+    </a>
+    
+    <a href="/guides/first-scrape" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#485697] dark:hover:border-[#485697] overflow-hidden no-underline transition-colors">
+      <div className="h-56 bg-gradient-to-br from-[#543182] to-[#401f6b] flex items-center justify-center overflow-hidden">
+        <svg className="w-24 h-24 text-white/80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      </div>
+      <div className="p-6 bg-white dark:bg-[#1a1d27]">
+        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-2">
+          Usage guides
+        </h3>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          Step-by-step tutorials for common workflows and operations
+        </p>
+        <div className="flex items-center text-sm font-medium text-[#485697] group-hover:text-[#543182]">
+          View guides
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </div>
+    </a>
+    
+    <a href="/ai/action-runner" className="group block rounded-2xl border border-gray-200 dark:border-[#27272a] hover:border-[#485697] dark:hover:border-[#485697] overflow-hidden no-underline transition-colors">
+      <div className="h-56 bg-gradient-to-br from-[#1c398e] to-[#0069a8] flex items-center justify-center overflow-hidden">
+        <svg className="w-24 h-24 text-white/80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+      </div>
+      <div className="p-6 bg-white dark:bg-[#1a1d27]">
+        <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100 mb-2">
+          AI automation
+        </h3>
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+          Learn about MCP servers, Action Runner, and custom workflows
+        </p>
+        <div className="flex items-center text-sm font-medium text-[#485697] group-hover:text-[#543182]">
+          Discover automation
+          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      </div>
+    </a>
+  </div>
+</div>
 
-Everything you need to create world-class documentation.
-
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
-
-## Need inspiration?
-
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="rounded-2xl border-2 border-[#485697] dark:border-[#485697] bg-gradient-to-br from-[#485697]/10 to-[#543182]/10 dark:from-[#485697]/20 dark:to-[#543182]/20 p-8 text-center">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Ready to automate your creator operations?
+    </h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400 max-w-2xl mx-auto mb-8">
+      Deploy your own self-hosted AI platform and take control of your content workflow
+    </p>
+    <a 
+      href="/quickstart"
+      className="inline-flex items-center px-6 py-3 rounded-lg bg-[#485697] hover:bg-[#543182] text-white font-semibold transition-colors no-underline"
+    >
+      Start building now
+      <svg className="ml-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+      </svg>
+    </a>
+  </div>
+</div>

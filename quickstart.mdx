@@ -1,80 +1,314 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Step-by-step guide to clone, install, configure, and start Genie Helper services
 ---
 
-## Get started in three steps
+# Quick Start Guide
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide will walk you through setting up Genie Helper on your VPS. The platform is designed to run on a self-hosted server with all services managed via PM2.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+**Prerequisites:**
+- Ubuntu/Debian VPS with at least 8GB RAM
+- Node.js 18+ installed
+- Docker and Docker Compose installed
+- Redis server running
+- Nginx or similar reverse proxy
 </Note>
+
+## Installation Steps
+
+<Steps>
+  <Step title="Clone the Repository">
+    Clone the Genie Helper source code to your server:
+
+    ```bash
+    git clone <repository-url> agentx
+    cd agentx
+    ```
+  </Step>
+
+  <Step title="Install Dependencies">
+    Install Node.js dependencies for all services:
+
+    ```bash
+    # Install main server dependencies
+    npm install
+
+    # Install dashboard dependencies
+    cd dashboard
+    npm install
+    cd ..
+
+    # Install media worker dependencies
+    cd media-worker
+    npm install
+    cd ..
+    ```
+  </Step>
+
+  <Step title="Configure Environment Variables">
+    Create a `.env` file in the project root with the required credentials:
+
+    ```bash
+    # Credentials encryption key (base64 of 32 bytes)
+    CREDENTIALS_ENC_KEY_B64=<your-base64-key>
+
+    # Directus admin token
+    DIRECTUS_ADMIN_TOKEN=<your-directus-token>
+
+    # RBAC sync webhook secret
+    RBAC_SYNC_WEBHOOK_SECRET=<your-webhook-secret>
+
+    # AnythingLLM configuration
+    SERVER_PORT=3001
+    STORAGE_DIR=./storage
+
+    # Directus configuration
+    DIRECTUS_URL=http://localhost:8055
+
+    # Ollama configuration
+    OLLAMA_BASE_URL=http://localhost:11434
+    ```
+
+    <Warning>
+    Generate a secure 32-byte key for `CREDENTIALS_ENC_KEY_B64`:
+    ```bash
+    node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+    ```
+    </Warning>
+  </Step>
+
+  <Step title="Configure MCP Servers">
+    The MCP server configuration is located at `storage/plugins/anythingllm_mcp_servers.json`. It should auto-boot on startup via the patched `server/utils/boot/index.js`.
+
+    Verify the three MCP servers are configured:
+    - **Directus MCP** — `scripts/directus-mcp-server.mjs`
+    - **Ollama MCP** — `scripts/ollama-mcp-server.mjs`
+    - **Stagehand MCP** — `scripts/stagehand-mcp-server.mjs`
+  </Step>
+
+  <Step title="Install Ollama Models">
+    Pull the required Ollama models for AI operations:
+
+    ```bash
+    ollama pull dolphin3:8b-llama3.1-q4_K_M
+    ollama pull dolphin-mistral:7b
+    ollama pull qwen-2.5:latest
+    ollama pull phi-3.5:latest
+    ollama pull llama3.2:3b
+    ollama pull bge-m3:latest
+    ```
+
+    <Note>
+    The `scout-fast-tag:latest` model is a custom SmolLM model for taxonomy classification. You'll need to build this separately if using the taxonomy features.
+    </Note>
+  </Step>
+
+  <Step title="Build the Dashboard">
+    Build the React SPA for production:
+
+    ```bash
+    cd dashboard
+    npm run build
+    cd ..
+    ```
+
+    The build output will be in `dashboard/dist/` and should be served by your web server.
+  </Step>
+
+  <Step title="Configure Nginx Reverse Proxy">
+    Set up Nginx to proxy requests to the various services:
+
+    ```nginx
+    # SPA fallback for React Router
+    error_page 404 =200 /index.html;
+
+    # Directus API proxy
+    location /api/directus/ {
+        proxy_pass http://127.0.0.1:8055/;
+        proxy_set_header Host $host;
+    }
+
+    # AnythingLLM proxy (with WebSocket support)
+    location /api/llm/ {
+        proxy_pass http://127.0.0.1:3001/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade "upgrade";
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 86400;
+    }
+    ```
+
+    <Warning>
+    **Plesk Users:** If using Plesk, add these rules via **Domains → Apache & nginx Settings → Additional nginx directives**. NEVER add `location /` — Plesk generates it automatically.
+    </Warning>
+  </Step>
+
+  <Step title="Start Services with PM2">
+    Use PM2 to manage all services:
+
+    ```bash
+    # Start AnythingLLM
+    pm2 start npm --name "anything-llm" -- start
+
+    # Start Directus CMS
+    pm2 start npm --name "agentx-cms" --cwd ./cms -- start
+
+    # Start Stagehand server
+    pm2 start npm --name "stagehand-server" --cwd ./stagehand -- start
+
+    # Start Dashboard (serve static files)
+    pm2 start npx --name "genie-dashboard" -- serve dashboard/dist -l 3100
+
+    # Start Media Worker
+    pm2 start npm --name "media-worker" --cwd ./media-worker -- start
+
+    # Start Document Collector
+    pm2 start npm --name "anything-collector" -- run collector
+
+    # Save PM2 process list
+    pm2 save
+    pm2 startup
+    ```
+  </Step>
+</Steps>
+
+## Verify Installation
+
+Check that all services are running:
+
+```bash
+pm2 status
+```
+
+You should see the following services:
+
+| Service | Port | Status |
+|---------|------|--------|
+| anything-llm | 3001 | online |
+| agentx-cms | 8055 | online |
+| stagehand-server | 3002 | online |
+| genie-dashboard | 3100 | online |
+| media-worker | — | online |
+| anything-collector | — | online |
+
+## Access the Platform
+
+<CardGroup cols={2}>
+  <Card title="Creator Dashboard" icon="grid">
+    Access the main dashboard at `https://yourdomain.com/app/`
+  </Card>
+  <Card title="Admin Panel" icon="shield">
+    Access the admin panel at `https://yourdomain.com/admin`
+  </Card>
+  <Card title="Directus CMS" icon="database">
+    Direct access at `http://localhost:8055/admin`
+  </Card>
+  <Card title="AnythingLLM" icon="robot">
+    Direct access at `http://localhost:3001`
+  </Card>
+</CardGroup>
+
+### Default Credentials
+
+<Warning>
+Change these credentials before public launch!
+</Warning>
+
+| Service | Email | Password |
+|---------|-------|----------|
+| Directus | admin@geniehelper.com | password |
+| AnythingLLM | poweradmin@geniehelper.com | (MY)P@$$w3rd |
+
+**AnythingLLM API Key:** `38KEHYS-NVPMBSX-GVVJNYH-VQHAN9S`
+
+## Common Operations
+
+### Restart All Services
+
+```bash
+pm2 restart all
+```
+
+### Rebuild Dashboard After Code Changes
+
+```bash
+cd dashboard && npm run build
+```
+
+### Restart AnythingLLM After Server Changes
+
+```bash
+pm2 restart anything-llm
+```
+
+### View Service Logs
+
+```bash
+# View AnythingLLM logs
+pm2 logs anything-llm --lines 50
+
+# View Media Worker logs
+pm2 logs media-worker --lines 50
+
+# View all logs
+pm2 logs
+```
+
+### Monitor Service Status
+
+```bash
+# Real-time monitoring
+pm2 monit
+
+# Service metrics
+pm2 status
+```
+
+## Troubleshooting
+
+<Accordion title="Services won't start">
+  Check the logs with `pm2 logs <service-name>` to identify the error. Common issues:
+  - Missing environment variables in `.env`
+  - Port conflicts (check if ports 3001, 8055, 3002, 3100 are available)
+  - Redis not running (required for BullMQ)
+</Accordion>
+
+<Accordion title="MCP servers not loading">
+  Verify that `storage/plugins/anythingllm_mcp_servers.json` exists and contains valid JSON. Check AnythingLLM logs for MCP boot messages.
+</Accordion>
+
+<Accordion title="Nginx 502 errors">
+  Ensure all upstream services are running:
+  ```bash
+  curl http://localhost:3001  # AnythingLLM
+  curl http://localhost:8055  # Directus
+  ```
+</Accordion>
+
+<Accordion title="Ollama models not responding">
+  Verify Ollama is running:
+  ```bash
+  ollama list
+  curl http://localhost:11434/api/tags
+  ```
+  If models are missing, re-run `ollama pull` commands from Step 5.
+</Accordion>
+
+## Next Steps
+
+Now that your services are running:
+
+<Steps>
+  <Step title="Review Architecture">
+    Learn how services communicate in the [Architecture guide](/architecture)
+  </Step>
+  <Step title="Connect Platforms">
+    Link your OnlyFans and other creator platforms via the dashboard
+  </Step>
+  <Step title="Configure AI Agent">
+    Customize the AI workspace and system prompts in AnythingLLM
+  </Step>
+</Steps>

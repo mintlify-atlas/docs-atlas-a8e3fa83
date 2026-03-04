@@ -1,0 +1,190 @@
+---
+title: Creator Profiles
+description: Platform account management with encrypted credentials and scrape status
+---
+
+## Overview
+
+The `creator_profiles` collection stores platform account configurations, encrypted credentials, and scraping status for connected creator accounts. Each profile represents a connection to a creator platform (OnlyFans, Fansly, etc.).
+
+## Purpose
+
+- Store encrypted platform credentials using AES-256-GCM server-side encryption
+- Track scraping status and last successful sync timestamps
+- Manage platform-specific configuration and authentication state
+- Link platform accounts to user personas for multi-platform management
+
+## Key Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `user_id` | Foreign Key | Links to `directus_users` |
+| `platform` | String | Platform identifier (e.g., "onlyfans", "fansly") |
+| `username` | String | Platform username/handle |
+| `credentials` | JSON | Encrypted credentials object (AES-256-GCM) |
+| `scrape_status` | String | Current status: `idle`, `scraping`, `success`, `error` |
+| `last_scraped_at` | DateTime | Timestamp of last successful scrape |
+| `is_active` | Boolean | Whether this profile is actively monitored |
+| `created_at` | DateTime | Profile creation timestamp |
+| `updated_at` | DateTime | Last modification timestamp |
+
+## Credential Encryption
+
+Credentials are encrypted using server-side AES-256-GCM encryption before storage:
+
+```javascript
+// Encryption format (server-side only)
+{
+  enc: "v1:iv:tag:ciphertext"
+}
+```
+
+**Security notes:**
+- All encryption happens server-side only
+- Encryption key stored in `CREDENTIALS_ENC_KEY_B64` environment variable
+- No encryption keys are ever sent to the browser
+- See `server/utils/credentialsCrypto.js` for implementation details
+
+## Example Queries
+
+### List All Creator Profiles
+
+<CodeGroup>
+```javascript MCP Tool
+// Using directus MCP server
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-items",
+  arguments: {
+    collection: "creator_profiles",
+    fields: ["id", "platform", "username", "scrape_status", "last_scraped_at"],
+    filter: {
+      is_active: { _eq: true }
+    }
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/creator_profiles" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'fields=id,platform,username,scrape_status,last_scraped_at' \
+  --data-urlencode 'filter[is_active][_eq]=true'
+```
+</CodeGroup>
+
+### Get Single Profile
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-item",
+  arguments: {
+    collection: "creator_profiles",
+    id: "profile-uuid-here",
+    fields: ["*"]
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/creator_profiles/PROFILE_ID" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+</CodeGroup>
+
+### Update Scrape Status
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "update-item",
+  arguments: {
+    collection: "creator_profiles",
+    id: "profile-uuid-here",
+    data: {
+      scrape_status: "success",
+      last_scraped_at: new Date().toISOString()
+    }
+  }
+});
+```
+
+```bash REST API
+curl -X PATCH "https://geniehelper.com/api/directus/items/creator_profiles/PROFILE_ID" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "scrape_status": "success",
+    "last_scraped_at": "2026-03-04T12:00:00Z"
+  }'
+```
+</CodeGroup>
+
+### Search Profiles by Platform
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "search-items",
+  arguments: {
+    collection: "creator_profiles",
+    query: "onlyfans",
+    fields: ["id", "platform", "username", "is_active"]
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/creator_profiles" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'search=onlyfans'
+```
+</CodeGroup>
+
+## Related Collections
+
+- **`platform_sessions`** - Encrypted browser cookies from extension for authentication
+- **`media_jobs`** - Scraping jobs triggered for this profile
+- **`scraped_media`** - Content scraped from this profile
+- **`hitl_sessions`** - Human-in-the-loop login requests when scraping requires manual intervention
+
+## Workflow Integration
+
+### Profile Scraping Flow
+
+1. User connects platform via `/app/platforms`
+2. System checks for existing cookies in `platform_sessions`
+3. If cookies exist: Create `media_jobs` entry with type `scrape_profile`
+4. If no cookies: Create `hitl_sessions` entry and show yellow dashboard alert
+5. Media worker processes job using Stagehand browser automation
+6. Results stored in `scraped_media`, profile's `scrape_status` updated
+
+### Credential Management
+
+All credential encryption/decryption happens server-side:
+
+- **Encryption endpoint**: `POST /api/credentials/encrypt`
+- **Decryption endpoint**: `POST /api/credentials/decrypt`
+- **Implementation**: `server/utils/credentialsCrypto.js`
+- **Format**: Legacy string support + new object format `{enc: "v1:..."}`
+
+## Best Practices
+
+1. **Never decrypt credentials in browser** - All encryption operations are server-side only
+2. **Check `platform_sessions` before scraping** - Avoids unnecessary HITL requests
+3. **Monitor `scrape_status`** - Poll for job completion rather than blocking
+4. **Respect rate limits** - Use `last_scraped_at` to prevent over-scraping
+5. **Validate platform field** - Ensure platform is in supported list before creating profile
+
+## See Also
+
+- [Media Collections](/api/collections/media) - Scraped content and scheduled posts
+- [Jobs Collections](/api/collections/jobs) - Background job tracking
+- [Directus MCP Tools](/api/mcp/directus) - Full tool reference

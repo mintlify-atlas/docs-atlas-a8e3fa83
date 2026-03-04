@@ -1,0 +1,483 @@
+---
+title: Custom Actions
+description: Create custom Action Runner flows for AI agent automation
+---
+
+Action Runner allows the AI agent to execute pre-built flows by emitting `[ACTION:slug:{"params"}]` tags in chat responses. The system intercepts these tags, executes the flow steps, and streams status updates back to the user.
+
+## How It Works
+
+1. **AI emits action tag** — Model outputs `[ACTION:slug:{"params"}]` in its prose
+2. **Interceptor strips tag** — Action-runner plugin removes tag from visible chat
+3. **Flow execution** — System fetches flow from Directus `action_flows` collection
+4. **Status streaming** — Each step streams status back to chat interface
+5. **Results logged** — Execution logged in `agent_audits` collection
+
+## Flow Storage
+
+Flows are stored in the Directus `action_flows` collection:
+
+| Field | Type | Description |
+|-------|------|------------|
+| `slug` | string | Unique identifier (used in ACTION tag) |
+| `name` | string | Human-readable name |
+| `description` | text | What the flow does |
+| `steps` | JSON | Array of step definitions |
+| `active` | boolean | Enable/disable flow |
+
+## Built-in Action Flows
+
+| Slug | Purpose |
+|------|--------|
+| `scout-analyze` | Scrape URL + AI analysis |
+| `taxonomy-tag` | Auto-classify content with 6-concept taxonomy |
+| `post-create` | Draft platform-specific social post |
+| `message-generate` | Fan engagement message |
+| `memory-recall` | Search stored data + summarize |
+| `media-process` | Queue media job (watermark, teaser, compress) |
+
+## Step Types
+
+The Action Runner supports 14+ step types. Each step can reference previous step results using variable interpolation.
+
+### Directus Steps
+
+#### `directus_read`
+
+Read items from a Directus collection.
+
+```json
+{
+  "type": "directus_read",
+  "result_key": "user_data",
+  "config": {
+    "collection": "user_personas",
+    "filter": {"user_id": {"_eq": "$input.user_id"}},
+    "fields": "id,onboarding_state,brand_colors",
+    "limit": 1
+  }
+}
+```
+
+**Config options:**
+- `collection` (required) — Collection name
+- `filter` — Filter object (Directus query syntax)
+- `fields` — Comma-separated field names
+- `limit` — Max items to return
+- `sort` — Sort field (`-field` for descending)
+- `id` — Read single item by ID
+
+#### `directus_write`
+
+Create a new item in a collection.
+
+```json
+{
+  "type": "directus_write",
+  "result_key": "new_post",
+  "config": {
+    "collection": "scheduled_posts",
+    "item": {
+      "creator_profile_id": "$input.profile_id",
+      "platform": "onlyfans",
+      "caption": "$input.caption",
+      "scheduled_time": "$input.scheduled_time",
+      "status": "pending"
+    }
+  }
+}
+```
+
+#### `directus_update`
+
+Update an existing item.
+
+```json
+{
+  "type": "directus_update",
+  "result_key": "updated",
+  "config": {
+    "collection": "creator_profiles",
+    "id": "$input.profile_id",
+    "item": {
+      "last_scraped": "$context.timestamp"
+    }
+  }
+}
+```
+
+#### `directus_delete`
+
+Delete an item.
+
+```json
+{
+  "type": "directus_delete",
+  "result_key": "deleted",
+  "config": {
+    "collection": "scheduled_posts",
+    "id": "$input.post_id"
+  }
+}
+```
+
+#### `directus_search`
+
+Full-text search across a collection.
+
+```json
+{
+  "type": "directus_search",
+  "result_key": "search_results",
+  "config": {
+    "collection": "scraped_media",
+    "query": "$input.search_term",
+    "fields": "id,caption,engagement_rate",
+    "limit": 10
+  }
+}
+```
+
+#### `directus_trigger`
+
+Trigger a Directus Flow.
+
+```json
+{
+  "type": "directus_trigger",
+  "result_key": "flow_result",
+  "config": {
+    "flow_uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "payload": {
+      "user_id": "$input.user_id",
+      "action": "send_notification"
+    }
+  }
+}
+```
+
+### Stagehand Steps (Browser Automation)
+
+#### `stagehand_start`
+
+Start a new browser session.
+
+```json
+{
+  "type": "stagehand_start",
+  "result_key": "session",
+  "config": {}
+}
+```
+
+Returns: `{ sessionId: "xyz123" }`
+
+#### `stagehand_navigate`
+
+Navigate to a URL.
+
+```json
+{
+  "type": "stagehand_navigate",
+  "result_key": "nav_result",
+  "config": {
+    "sessionId": "$session.sessionId",
+    "url": "$input.target_url"
+  }
+}
+```
+
+#### `stagehand_extract`
+
+Extract data from current page using AI.
+
+```json
+{
+  "type": "stagehand_extract",
+  "result_key": "page_data",
+  "config": {
+    "sessionId": "$session.sessionId",
+    "instruction": "Extract all post titles and engagement metrics",
+    "schema": {
+      "posts": {
+        "type": "array",
+        "items": {
+          "title": "string",
+          "likes": "number",
+          "comments": "number"
+        }
+      }
+    }
+  }
+}
+```
+
+#### `stagehand_act`
+
+Perform an action on the page (click, type, etc.).
+
+```json
+{
+  "type": "stagehand_act",
+  "result_key": "action_result",
+  "config": {
+    "sessionId": "$session.sessionId",
+    "action": "Click the login button"
+  }
+}
+```
+
+#### `stagehand_close`
+
+Close browser session.
+
+```json
+{
+  "type": "stagehand_close",
+  "result_key": "closed",
+  "config": {
+    "sessionId": "$session.sessionId"
+  }
+}
+```
+
+#### `stagehand_cookie_login`
+
+Start session with stored platform cookies (bypasses login).
+
+```json
+{
+  "type": "stagehand_cookie_login",
+  "result_key": "auth_session",
+  "config": {
+    "creator_profile_id": "$input.profile_id",
+    "platform": "onlyfans",
+    "url": "https://onlyfans.com/my/subscribers"
+  }
+}
+```
+
+Fetches decrypted cookies from `platform_sessions`, injects them, and navigates to target URL.
+
+#### `stagehand_extract_cached`
+
+Extract with 10-minute cache (reduces browser calls).
+
+```json
+{
+  "type": "stagehand_extract_cached",
+  "result_key": "cached_data",
+  "config": {
+    "sessionId": "$session.sessionId",
+    "url": "https://example.com",
+    "instruction": "Extract pricing table",
+    "ttl_ms": 600000
+  }
+}
+```
+
+### Ollama Steps (AI Generation)
+
+#### `ollama_generate`
+
+Generate completion (single-turn, no history).
+
+```json
+{
+  "type": "ollama_generate",
+  "result_key": "caption",
+  "config": {
+    "model": "dolphin-mistral:7b",
+    "prompt": "Write a flirty caption for this photo: $input.photo_description",
+    "system": "You are an OnlyFans content strategist. Be playful and engaging.",
+    "options": {
+      "temperature": 0.9,
+      "top_p": 0.95
+    }
+  }
+}
+```
+
+#### `ollama_chat`
+
+Multi-turn chat with message history.
+
+```json
+{
+  "type": "ollama_chat",
+  "result_key": "response",
+  "config": {
+    "model": "qwen-2.5:latest",
+    "messages": [
+      {"role": "user", "content": "$input.user_message"}
+    ],
+    "system": "You are a helpful assistant."
+  }
+}
+```
+
+### Taxonomy Steps
+
+#### `taxonomy_terms_read`
+
+Read taxonomy terms with caching.
+
+```json
+{
+  "type": "taxonomy_terms_read",
+  "result_key": "terms",
+  "config": {
+    "super_concept": "aesthetic",
+    "platform": "onlyfans",
+    "limit": 20
+  }
+}
+```
+
+#### `taxonomy_invalidate`
+
+Bust taxonomy cache after writes.
+
+```json
+{
+  "type": "taxonomy_invalidate",
+  "result_key": "invalidated",
+  "config": {}
+}
+```
+
+### Queue Steps
+
+#### `bullmq_enqueue`
+
+Enqueue a BullMQ job.
+
+```json
+{
+  "type": "bullmq_enqueue",
+  "result_key": "job",
+  "config": {
+    "queue": "media-jobs",
+    "job": {
+      "id": "$input.job_id",
+      "type": "apply_watermark",
+      "media_id": "$input.media_id",
+      "watermark_text": "© 2026"
+    }
+  }
+}
+```
+
+### Generic HTTP
+
+#### `http_request`
+
+Make arbitrary HTTP request.
+
+```json
+{
+  "type": "http_request",
+  "result_key": "api_response",
+  "config": {
+    "url": "https://api.example.com/webhook",
+    "method": "POST",
+    "headers": {
+      "Authorization": "Bearer $input.token"
+    },
+    "body": {
+      "event": "post_created",
+      "data": "$new_post"
+    }
+  }
+}
+```
+
+## Variable Interpolation
+
+Steps can reference data from:
+
+- `$input.field` — Parameters from ACTION tag
+- `$steps[N].field` — Result from step N (0-indexed)
+- `$result_key.field` — Result from step with given result_key
+- `$context.field` — Context data (user info, workspace, timestamp)
+
+**Example flow:**
+
+```json
+{
+  "slug": "post-creator",
+  "name": "Create Scheduled Post",
+  "steps": [
+    {
+      "type": "ollama_generate",
+      "result_key": "caption",
+      "config": {
+        "model": "dolphin-mistral:7b",
+        "prompt": "Write caption for: $input.description"
+      }
+    },
+    {
+      "type": "directus_write",
+      "result_key": "post",
+      "config": {
+        "collection": "scheduled_posts",
+        "item": {
+          "caption": "$caption.response",
+          "platform": "$input.platform",
+          "scheduled_time": "$input.time"
+        }
+      }
+    }
+  ]
+}
+```
+
+## Creating a New Action Flow
+
+1. **Design the flow** — Map out steps and data flow
+2. **Create in Directus** — Add to `action_flows` collection
+3. **Set slug** — Unique identifier (e.g., `analytics-report`)
+4. **Define steps** — JSON array of step definitions
+5. **Test execution** — Trigger from AI chat: `[ACTION:analytics-report:{"period":"7d"}]`
+6. **Check audit log** — Review in `agent_audits` collection
+
+## Execution Timeouts
+
+- **Per-step timeout:** 120 seconds
+- Steps exceeding timeout are aborted
+- Flow execution stops on first failed step
+- Partial results available in error response
+
+## Error Handling
+
+Failed steps return error details:
+
+```json
+{
+  "success": false,
+  "slug": "post-creator",
+  "error": "Step 2 (directus_write) failed: Collection not found",
+  "results": {
+    "caption": { "response": "Check out this new content!" }
+  },
+  "failedStep": 1
+}
+```
+
+All executions logged to `agent_audits` with full error details.
+
+## Implementation Files
+
+- `server/utils/actionRunner/index.js` — Flow executor (server/utils/actionRunner/index.js:1)
+- `server/utils/actionRunner/stepExecutors.js` — Step type implementations (server/utils/actionRunner/stepExecutors.js:1)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Project Structure" icon="folder-tree" href="/guides/project-structure">
+    Understand the codebase layout
+  </Card>
+  <Card title="Extending MCP" icon="plug" href="/guides/extending-mcp">
+    Add new MCP tools
+  </Card>
+</CardGroup>

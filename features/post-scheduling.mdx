@@ -1,0 +1,422 @@
+---
+title: "Post Scheduling"
+description: "Scheduled posts collection with polling worker and Stagehand cross-platform publishing"
+---
+
+## Overview
+
+Genie Helper's post scheduler polls the `scheduled_posts` collection every 60 seconds and automatically publishes posts to X, Reddit, Instagram, TikTok, and other platforms using Stagehand browser automation.
+
+**Collection**: `scheduled_posts`  
+**Worker**: Media worker (BullMQ)  
+**Poll interval**: 60 seconds (configurable via `POST_SCHEDULER_MS`)
+
+## Architecture
+
+### Scheduling Flow
+
+```
+Dashboard Content Calendar
+  ↓
+User creates post (AI-generated or manual)
+  ↓
+Scheduled_posts record created (status: draft)
+  ↓
+User sets scheduled_time + clicks "Schedule Post"
+  ↓
+Status changes to: scheduled
+  ↓
+Post scheduler polls every 60s
+  ↓
+When scheduled_time ≤ now:
+  ↓
+Create media_jobs record (operation: publish_post)
+  ↓
+Media worker picks job
+  ↓
+Stagehand session starts
+  ↓
+Inject cookies from platform_sessions
+  ↓
+Navigate to platform compose page
+  ↓
+Fill caption + attach media (if provided)
+  ↓
+Click "Post" button
+  ↓
+Update scheduled_posts: status=posted, posted_at=now
+```
+
+## Collections
+
+### scheduled_posts
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `platform` | String | Target platform (x, reddit, instagram, tiktok) |
+| `content_text` | Text | Post caption/body |
+| `scheduled_time` | DateTime | When to publish (null = draft) |
+| `status` | String | `draft` \| `scheduled` \| `publishing` \| `posted` \| `failed` |
+| `media_id` | FK | Directus file ID (optional) |
+| `clip_job_id` | FK | Media job ID for platform-specific clip (optional) |
+| `platform_meta` | JSON | Platform-specific params (see below) |
+| `posted_at` | DateTime | Actual publish timestamp |
+| `error_message` | Text | Failure reason (if status=failed) |
+| `creator_id` | FK | Directus user ID |
+
+### platform_meta Examples
+
+<CodeGroup>
+
+```json Reddit
+{
+  "subreddit": "OnlyFans101",
+  "post_type": "text",
+  "title": "New content drop this weekend!"
+}
+```
+
+```json Instagram
+{
+  "post_type": "reel",
+  "hashtags": "#creator #contentcreator"
+}
+```
+
+```json TikTok
+{
+  "hashtags": "#fyp #creator",
+  "privacy": "public"
+}
+```
+
+</CodeGroup>
+
+## Post Scheduler
+
+**Implementation**: `media-worker/index.js:1186-1241`
+
+### Polling Logic
+
+<CodeGroup>
+
+```javascript media-worker/index.js (Lines 1195-1222)
+setInterval(async () => {
+  try {
+    const now = new Date().toISOString();
+    
+    // Find all posts due for publishing
+    const res = await dAPI("GET",
+      `/items/scheduled_posts?filter[status][_eq]=scheduled&filter[scheduled_time][_lte]=${now}&limit=10&fields=id,platform,content_text,platform_meta,media_id,clip_job_id,creator_id`
+    );
+    
+    const due = res?.data || [];
+    
+    for (const post of due) {
+      // Create publish_post job
+      await dAPI("POST", "/items/media_jobs", {
+        operation: "publish_post",
+        status: "queued",
+        params: {
+          scheduled_post_id: post.id,
+          platform: post.platform,
+          content_text: post.content_text,
+          platform_meta: post.platform_meta || {},
+          creator_profile_id: post.creator_profile_id,
+        },
+        priority: 1,
+      });
+      
+      console.log(`[post-scheduler] queued publish job for post=${post.id} platform=${post.platform}`);
+    }
+  } catch (err) {
+    console.error(`[post-scheduler] poll error: ${err.message}`);
+  }
+}, POST_SCHEDULER_MS);
+```
+
+</CodeGroup>
+
+## Publishing Operation
+
+**Operation**: `publish_post` (media-worker)  
+**Browser**: Local Playwright (headless Chrome)  
+**Vision LLM**: `ollama/qwen-2.5`
+
+### Supported Platforms
+
+| Platform | Status | Compose URL | Notes |
+|----------|--------|-------------|-------|
+| **X (Twitter)** | ✅ Full | `https://x.com/compose/tweet` | 280 char limit |
+| **Reddit** | ✅ Full | `https://reddit.com/r/{subreddit}/submit` | Requires subreddit + title |
+| Instagram | 🚧 Partial | Web posting disabled by Meta | API required |
+| TikTok | 🚧 Partial | Desktop upload limited | Mobile flow needed |
+| OnlyFans | 📅 Planned | Cookie auth required | |
+| Fansly | 📅 Planned | Cookie auth required | |
+
+### X (Twitter) Publishing
+
+**Implementation**: `media-worker/index.js:879-890`
+
+<CodeGroup>
+
+```javascript media-worker/index.js (Lines 879-890)
+async function postToX(sid, content_text) {
+  // Navigate to compose page
+  await publishSPost(`/v1/sessions/${sid}/navigate`, { 
+    url: "https://x.com/compose/tweet" 
+  });
+  
+  // Fill tweet text
+  await publishSPost(`/v1/sessions/${sid}/act`, {
+    action: `Type the following text into the tweet compose box: "${content_text.replace(/"/g, '\\"')}"`,
+    modelName: PUBLISH_STAGEHAND_MODEL,
+  });
+  
+  // Submit
+  await publishSPost(`/v1/sessions/${sid}/act`, {
+    action: "Click the Post button to submit the tweet",
+    modelName: PUBLISH_STAGEHAND_MODEL,
+  });
+  
+  return { platform: "x", status: "posted" };
+}
+```
+
+</CodeGroup>
+
+### Reddit Publishing
+
+**Implementation**: `media-worker/index.js:893-920`
+
+<CodeGroup>
+
+```javascript media-worker/index.js (Lines 893-920)
+async function postToReddit(sid, content_text, platform_meta = {}) {
+  const subreddit = platform_meta.subreddit || "u_me";
+  const post_type = platform_meta.post_type || "text";
+  const url = `https://www.reddit.com/r/${subreddit}/submit?type=${post_type}`;
+  
+  await publishSPost(`/v1/sessions/${sid}/navigate`, { url });
+  
+  if (post_type === "text") {
+    // Fill title
+    await publishSPost(`/v1/sessions/${sid}/act`, {
+      action: `Fill in the title field with: "${platform_meta.title || content_text.slice(0, 100)}"`,
+      modelName: PUBLISH_STAGEHAND_MODEL,
+    });
+    
+    // Fill body
+    await publishSPost(`/v1/sessions/${sid}/act`, {
+      action: `Fill in the body/text field with: "${content_text}"`,
+      modelName: PUBLISH_STAGEHAND_MODEL,
+    });
+  }
+  
+  // Submit
+  await publishSPost(`/v1/sessions/${sid}/act`, {
+    action: "Click the Post button to submit",
+    modelName: PUBLISH_STAGEHAND_MODEL,
+  });
+  
+  return { platform: "reddit", subreddit, status: "posted" };
+}
+```
+
+</CodeGroup>
+
+### Cookie Injection
+
+The worker automatically loads cookies from `platform_sessions` to bypass login:
+
+<CodeGroup>
+
+```javascript media-worker/index.js (Lines 937-949)
+if (creator_profile_id) {
+  try {
+    const sessRes = await dAPI("GET",
+      `/items/platform_sessions?filter[creator_profile_id][_eq]=${creator_profile_id}&filter[platform][_eq]=${platform}&filter[status][_eq]=active&limit=1&fields=encrypted_cookies`
+    );
+    
+    const sess = sessRes?.data?.[0];
+    if (sess?.encrypted_cookies) {
+      const plain = decryptCredentials(sess.encrypted_cookies);
+      if (plain?.cookies) {
+        cookies = plain.cookies;
+      }
+    }
+  } catch { /* no cookies — will fall back to plain navigation */ }
+}
+
+// Inject into Playwright session
+if (cookies.length > 0) {
+  await publishSPost(`/v1/sessions/${sid}/cookies`, { cookies });
+}
+```
+
+</CodeGroup>
+
+## Content Calendar UI
+
+**Page**: `dashboard/src/pages/ContentCalendar/index.jsx`
+
+### Features
+
+1. **AI Caption Generator** (Modal 3A)
+   - Platform selector (TikTok, Instagram, X, Reddit, OnlyFans)
+   - Tone selector (flirty, playful, intimate, professional, casual, teasing)
+   - Topic input (optional)
+   - Length picker (short, medium, long)
+   - **Try Again** feedback loop with adjustment notes
+
+2. **Post Draft Editor** (Modal 3B)
+   - Platform specs validation (text limits, video dimensions)
+   - Media attachment from scraped_media
+   - Platform-specific clip generator (9:16 for TikTok/Snapchat)
+   - Schedule time picker
+   - Usage pill (plan limits)
+
+3. **Media Picker** (Modal 3C)
+   - Grid view of scraped_media
+   - Search filter
+   - Video duration + codec display
+
+### Plan Limits
+
+**Tracked in**: `usage` API (`/api/usage/increment`)
+
+| Tier | Posts/Month | Queue Size |
+|------|-------------|------------|
+| **Starter** | 3 | 3 |
+| **Creator** | 30 | Unlimited |
+| **Pro** | 150 | Unlimited |
+| **Studio** | Unlimited | Unlimited |
+
+**Enforcement**: `dashboard/src/pages/ContentCalendar/index.jsx:220-227`
+
+<CodeGroup>
+
+```javascript ContentCalendar/index.jsx (Lines 220-227)
+async function handleSave(scheduleNow) {
+  if (limitHit && scheduleNow) {
+    return alert('Post limit reached for this month. Upgrade your plan.');
+  }
+  
+  if (scheduleNow) {
+    const inc = await incrementUsage('post_creations');
+    if (!inc.ok) return alert('Post limit reached. Upgrade.');
+  }
+  
+  await posts.create({ ...draftPost, status: scheduleNow ? 'scheduled' : 'draft' });
+}
+```
+
+</CodeGroup>
+
+## AI Caption Generation
+
+**Endpoint**: `/api/captions/generate`  
+**Model**: `dolphin-mistral:7b` (uncensored content writer)
+
+### Request
+
+<CodeGroup>
+
+```javascript dashboard/src/pages/ContentCalendar/index.jsx
+const res = await fetch('/api/llm/api/captions/generate', {
+  method: 'POST',
+  headers: { 
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}` 
+  },
+  body: JSON.stringify({
+    platform: 'tiktok',
+    tone: 'flirty',
+    topic: 'new photo set',
+    length: 'medium'
+  })
+});
+
+const { caption } = await res.json();
+// "Can't wait to show you what I've been working on... 😏 New set drops tonight. Link in bio 💕 #newcontent #exclusive"
+```
+
+</CodeGroup>
+
+### Feedback Loop
+
+After first generation, user can click **"Try Again"** → Enters feedback note → Re-generates with adjustment:
+
+<CodeGroup>
+
+```javascript ContentCalendar/index.jsx (Lines 477-505)
+async function generateContent(feedbackNote) {
+  setGenerating(true);
+  
+  const res = await fetch('/api/llm/api/captions/generate', {
+    method: 'POST',
+    body: JSON.stringify({
+      platform: genPrompt.platform,
+      tone: genPrompt.tone,
+      topic: feedbackNote 
+        ? `${genPrompt.topic} [Adjustment: ${feedbackNote}]`  // Inject feedback
+        : genPrompt.topic,
+      length: genPrompt.length,
+    }),
+  });
+  
+  const data = await res.json();
+  setGeneratedText(data.caption);
+}
+```
+
+</CodeGroup>
+
+**Example feedback**: "Make it shorter, add a call to action, more emojis"
+
+## Status Flow
+
+```
+draft
+  ↓ (user clicks "Schedule Post")
+scheduled
+  ↓ (scheduler picks up)
+publishing
+  ↓ (Stagehand completes)
+posted ✓
+
+  OR
+  ↓ (error)
+failed ⚠️
+```
+
+**Error Messages**: Stored in `scheduled_posts.error_message`
+
+Common failures:
+- `HITL_REQUIRED` — No cookies available
+- `Stagehand timeout` — Page load failed
+- `Auto-posting to {platform} not yet implemented` — Platform stub
+
+## Logs & Debugging
+
+<CodeGroup>
+
+```bash View scheduler logs
+pm2 logs media-worker | grep post-scheduler
+
+# Watch polling in real-time
+pm2 logs media-worker -f | grep -E "post-scheduler|publish_post"
+```
+
+```bash Check scheduled posts (SQL)
+psql -d directus -c "SELECT id, platform, status, scheduled_time, posted_at FROM scheduled_posts WHERE status != 'draft' ORDER BY scheduled_time DESC LIMIT 10;"
+```
+
+</CodeGroup>
+
+## Related
+
+- [Media Processing](/features/media-processing) — Clip generation for platform specs
+- [Platform Scraping](/features/platform-scraping) — Cookie capture flow
+- [Dashboard](/features/dashboard) — Content Calendar UI

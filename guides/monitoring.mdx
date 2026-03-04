@@ -1,0 +1,522 @@
+---
+title: Monitoring & Debugging
+description: PM2 process management, log analysis, and service health monitoring
+---
+
+## Overview
+
+Genie Helper runs multiple services managed by PM2 (Process Manager 2). This guide covers monitoring service health, analyzing logs, and debugging common issues.
+
+## Service Architecture
+
+| Service | Port | PM2 Name | Purpose |
+|---------|------|----------|----------|
+| **AnythingLLM** | 3001 | `anything-llm` | Chat API, agent, embed widget |
+| **Directus CMS** | 8055 | `agentx-cms` | Collections, auth, REST API |
+| **Stagehand** | 3002 | `stagehand-server` | Browser automation |
+| **Dashboard** | 3100 | `genie-dashboard` | React SPA (`serve dashboard/dist/`) |
+| **Media Worker** | — | `media-worker` | BullMQ consumer (Redis) |
+| **Collector** | — | `anything-collector` | Document ingestion |
+| **Ollama** | 11434 | (system) | Local LLM inference |
+
+## PM2 Quick Reference
+
+### Check Service Status
+
+```bash
+# View all services
+pm2 status
+
+# Detailed status with memory/CPU
+pm2 list
+
+# Monitor in real-time
+pm2 monit
+```
+
+### Restart Services
+
+```bash
+# Restart all services
+pm2 restart all
+
+# Restart specific service
+pm2 restart anything-llm
+pm2 restart media-worker
+
+# Restart after code changes
+cd dashboard && npm run build
+pm2 restart genie-dashboard
+
+# Restart AnythingLLM after server changes
+pm2 restart anything-llm
+```
+
+### View Logs
+
+```bash
+# Tail all logs
+pm2 logs
+
+# Tail specific service
+pm2 logs anything-llm --lines 50
+pm2 logs media-worker --lines 50
+
+# View error logs only
+pm2 logs --err
+
+# Clear all logs
+pm2 flush
+```
+
+### Start/Stop Services
+
+```bash
+# Start all services
+pm2 start all
+
+# Stop all services
+pm2 stop all
+
+# Stop specific service
+pm2 stop anything-llm
+
+# Delete service from PM2
+pm2 delete anything-llm
+```
+
+## Log Analysis
+
+### AnythingLLM Logs
+
+```bash
+pm2 logs anything-llm --lines 100
+```
+
+**What to look for**:
+- MCP server boot messages
+- Agent tool execution
+- WebSocket connection status
+- LLM inference timing
+- Action Runner intercepts
+
+**Common errors**:
+```
+Error: MCP server failed to start
+→ Check: MCP server scripts exist, Node.js version >=18
+
+Error: Ollama connection refused
+→ Check: Ollama service running on port 11434
+
+Error: Workspace not found
+→ Check: Administrator workspace exists, slug is correct
+```
+
+### Media Worker Logs
+
+```bash
+pm2 logs media-worker --lines 100
+```
+
+**What to look for**:
+- BullMQ job processing
+- Stagehand session status
+- FFmpeg/ImageMagick output
+- Platform scrape results
+- HITL session creation
+
+**Common errors**:
+```
+Error: Stagehand session timeout
+→ Check: Stagehand server running, browser automation not stuck
+
+Error: Redis connection failed
+→ Check: Redis server running, connection config correct
+
+Error: FFmpeg command failed
+→ Check: FFmpeg installed, input file exists, disk space available
+```
+
+### Directus Logs
+
+```bash
+pm2 logs agentx-cms --lines 100
+```
+
+**What to look for**:
+- API request errors
+- Database connection issues
+- Flow execution status
+- File upload errors
+- RBAC sync webhook calls
+
+**Common errors**:
+```
+Error: Invalid token
+→ Check: JWT not expired, DIRECTUS_ADMIN_TOKEN set correctly
+
+Error: Collection not found
+→ Check: Migration completed, collection exists in schema
+
+Error: Flow execution failed
+→ Check: Flow configuration, operation availability
+```
+
+### Stagehand Logs
+
+```bash
+pm2 logs stagehand-server --lines 100
+```
+
+**What to look for**:
+- Browser session creation
+- Navigation timing
+- Cookie injection status
+- Screenshot captures
+- Page interaction errors
+
+**Common errors**:
+```
+Error: Browser launch failed
+→ Check: Chrome/Chromium installed, sufficient memory
+
+Error: Navigation timeout
+→ Check: URL accessible, platform not blocking automation
+
+Error: Element not found
+→ Check: Page structure changed, selector needs update
+```
+
+## Service Health Checks
+
+### Manual Health Checks
+
+```bash
+# Check AnythingLLM
+curl http://localhost:3001/api/ping
+
+# Check Directus
+curl http://localhost:8055/server/health
+
+# Check Stagehand
+curl http://localhost:3002/health
+
+# Check Ollama
+curl http://localhost:11434/api/tags
+```
+
+### Expected Responses
+
+```bash
+# AnythingLLM
+{"online":true}
+
+# Directus
+{"status":"ok"}
+
+# Stagehand
+{"status":"running"}
+
+# Ollama (lists installed models)
+{"models":[...]}
+```
+
+## Common Issues & Solutions
+
+### High Memory Usage
+
+**Symptoms**:
+- `pm2 status` shows high memory
+- System becomes sluggish
+- Services crash with OOM errors
+
+**Diagnosis**:
+```bash
+pm2 list
+# Look for memory column > 4GB
+```
+
+**Solutions**:
+- Restart memory-heavy service: `pm2 restart anything-llm`
+- Check for memory leaks in logs
+- Reduce concurrent Stagehand sessions
+- Upgrade server RAM (current ceiling: ~33 concurrent browser sessions)
+
+### Slow LLM Response
+
+**Symptoms**:
+- Chat responses take >30 seconds
+- Agent actions timeout
+- First token delay excessive
+
+**Diagnosis**:
+```bash
+pm2 logs anything-llm --lines 50
+# Look for: "LLM inference took XXXXms"
+```
+
+**Solutions**:
+- **Current setup**: CPU-only inference, dolphin3:8b stalls
+- **Workaround**: Use qwen-2.5:latest (33s first token acceptable)
+- **Long-term**: Upgrade to GPU-enabled VPS
+- **Check**: Ollama service not overloaded
+
+### MCP Server Not Starting
+
+**Symptoms**:
+- Agent can't use tools
+- "Tool not found" errors
+- MCP connection failures
+
+**Diagnosis**:
+```bash
+pm2 logs anything-llm --lines 100 | grep MCP
+# Look for boot errors
+```
+
+**Solutions**:
+1. Check MCP config exists:
+   ```bash
+   cat storage/plugins/anythingllm_mcp_servers.json
+   ```
+2. Verify MCP scripts exist:
+   ```bash
+   ls scripts/*-mcp-server.mjs
+   ```
+3. Check Node.js version:
+   ```bash
+   node --version  # Should be >=18
+   ```
+4. Restart AnythingLLM:
+   ```bash
+   pm2 restart anything-llm
+   ```
+
+### Stagehand Session Stuck
+
+**Symptoms**:
+- Scrape jobs never complete
+- "Browser session timeout" errors
+- Memory usage climbs over time
+
+**Diagnosis**:
+```bash
+pm2 logs stagehand-server --lines 50
+# Look for: sessions not closing, timeout errors
+```
+
+**Solutions**:
+1. Restart Stagehand:
+   ```bash
+   pm2 restart stagehand-server
+   ```
+2. Check browser process:
+   ```bash
+   ps aux | grep chromium
+   # Kill zombie browsers if needed
+   ```
+3. Review session management in media-worker logs
+4. Implement session timeout in job processing
+
+### Dashboard Not Updating
+
+**Symptoms**:
+- Code changes not reflected
+- Old version still serving
+- 404 on new routes
+
+**Solutions**:
+```bash
+# Rebuild React app
+cd dashboard
+npm run build
+
+# Restart dashboard service
+pm2 restart genie-dashboard
+
+# Clear browser cache
+# Hard refresh: Ctrl+Shift+R (Linux/Windows) or Cmd+Shift+R (Mac)
+```
+
+### HITL Sessions Not Created
+
+**Symptoms**:
+- No yellow banner on dashboard
+- Scrape fails silently
+- No entries in `hitl_sessions`
+
+**Diagnosis**:
+```bash
+pm2 logs media-worker --lines 100 | grep HITL
+# Check for HITL creation attempts
+```
+
+**Solutions**:
+1. Check `platform_sessions` for existing cookies:
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8055/items/platform_sessions?filter[user_id][_eq]=$USER_ID
+   ```
+2. Verify media-worker detecting missing cookies
+3. Check Directus permissions on `hitl_sessions` collection
+4. Review system prompt includes HITL instructions
+
+## Performance Monitoring
+
+### CPU Usage
+
+```bash
+# Real-time CPU monitoring
+pm2 monit
+
+# CPU usage per process
+top
+# Press 'P' to sort by CPU
+```
+
+**Normal CPU usage**:
+- **Idle**: Less than 5% total
+- **LLM inference**: 80-100% single core, 2-5 seconds
+- **FFmpeg clip**: 80-100% single core, approximately 30 seconds
+- **Stagehand session**: 20-40% per active browser
+
+### Disk Space
+
+```bash
+# Check disk usage
+df -h
+
+# Find large directories
+du -sh ./* | sort -h
+
+# Media storage (user uploads)
+du -sh storage/media/
+
+# Logs
+du -sh ~/.pm2/logs/
+```
+
+**Cleanup**:
+```bash
+# Clear old PM2 logs
+pm2 flush
+
+# Clear Redis cache (if needed)
+redis-cli FLUSHDB
+
+# Archive old media (manual)
+# Move to external storage or S3
+```
+
+### Network Monitoring
+
+```bash
+# Active connections
+netstat -tulpn | grep LISTEN
+
+# Expected ports:
+# 3001 - AnythingLLM
+# 3002 - Stagehand
+# 3100 - Dashboard
+# 8055 - Directus
+# 11434 - Ollama
+```
+
+## Debugging Workflows
+
+### Debug LLM Agent Issues
+
+<Steps>
+  <Step title="Check agent logs">
+    ```bash
+    pm2 logs anything-llm --lines 100
+    ```
+  </Step>
+  <Step title="Verify MCP tools available">
+    Check boot sequence for MCP server initialization
+  </Step>
+  <Step title="Test tool manually">
+    Use AnythingLLM UI (localhost:3001) to test tool directly
+  </Step>
+  <Step title="Review Action Runner">
+    Check `agent_audits` collection for execution logs
+  </Step>
+  <Step title="Check system prompt">
+    Verify workspace prompt includes required instructions
+  </Step>
+</Steps>
+
+### Debug Media Processing
+
+<Steps>
+  <Step title="Check job queue">
+    ```bash
+    pm2 logs media-worker --lines 50
+    ```
+  </Step>
+  <Step title="Verify BullMQ jobs">
+    Check `media_jobs` collection in Directus for job status
+  </Step>
+  <Step title="Test FFmpeg/ImageMagick">
+    Run commands manually to isolate issue
+  </Step>
+  <Step title="Check file permissions">
+    Ensure media-worker can read/write storage directory
+  </Step>
+  <Step title="Review Stagehand session">
+    Check session cleanup, screenshot captures
+  </Step>
+</Steps>
+
+### Debug Platform Scraping
+
+<Steps>
+  <Step title="Check platform sessions">
+    Verify cookies exist in `platform_sessions` collection
+  </Step>
+  <Step title="Test cookie freshness">
+    Cookies expire, may need HITL re-authentication
+  </Step>
+  <Step title="Review Stagehand logs">
+    Check navigation, selectors, timeout errors
+  </Step>
+  <Step title="Check HITL flow">
+    If cookies missing, verify HITL session created
+  </Step>
+  <Step title="Test manually">
+    Use browser to verify platform accessible, not blocking
+  </Step>
+</Steps>
+
+## Alerting & Notifications
+
+<Info>
+  Alerting system not yet implemented. Consider adding:
+</Info>
+
+- **Service down alerts**: Email/SMS when PM2 process crashes
+- **Disk space warnings**: Alert at 80% capacity
+- **Memory thresholds**: Alert when service exceeds limits
+- **Job failures**: Notify when BullMQ jobs fail repeatedly
+- **HITL requests**: Alert admin when human intervention needed
+
+## Admin Access
+
+For direct service access:
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| **Dashboard Admin** | `geniehelper.com/admin` | admin@geniehelper.com |
+| **Directus** | `localhost:8055/admin` | admin@geniehelper.com / password |
+| **AnythingLLM** | `localhost:3001` | poweradmin@geniehelper.com / (MY)P@$$w3rd |
+
+<Warning>
+  Change these credentials before public launch
+</Warning>
+
+## Related Resources
+
+- **PM2 documentation**: https://pm2.keymetrics.io/docs/usage/quick-start/
+- **Nginx logs**: `/var/log/nginx/` (Plesk managed)
+- **System logs**: `journalctl -u <service-name>`
+- **Redis monitoring**: `redis-cli INFO`

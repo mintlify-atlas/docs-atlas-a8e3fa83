@@ -1,0 +1,314 @@
+---
+title: Taxonomy System
+description: 6-concept content classification system with 3,208 tags for organizing and analyzing adult creator content
+---
+
+The Taxonomy System is a proprietary 6-concept classification framework designed to organize adult content with semantic precision. It powers auto-tagging, content search, performance analytics, and cross-platform content strategy.
+
+## Overview
+
+**Total tags**: 3,208 classified across 6 super-concepts
+
+**Purpose**: Enables creators to:
+- Auto-tag uploaded media for fast organization
+- Analyze which content themes perform best on each platform
+- Search their library by mood, activity, aesthetic, etc.
+- Generate platform-optimized captions based on tag patterns
+
+**Implementation**: Tags are stored in `taxonomy_mapping` collection, linked to `taxonomy_dimensions` (the 6 concepts).
+
+---
+
+## The 6 Concepts
+
+| Concept | Description | Example Tags |
+|---------|-------------|-------------|
+| **Aesthetic** | Visual style and theme | `glamour`, `luxury`, `vintage`, `gothic`, `minimalist`, `neon`, `cyberpunk` |
+| **Activity** | What's happening in the content | `posing`, `dancing`, `workout`, `cooking`, `gaming`, `bathing`, `teasing` |
+| **Mood** | Emotional tone and energy | `confident`, `playful`, `seductive`, `shy`, `dominant`, `submissive`, `mysterious` |
+| **Setting** | Location and environment | `indoor`, `outdoor`, `bedroom`, `bathroom`, `kitchen`, `gym`, `beach`, `car` |
+| **Attire** | Clothing and accessories | `lingerie`, `swimwear`, `latex`, `leather`, `cosplay`, `uniform`, `casual`, `nude` |
+| **Body Type** | Physical attributes | `athletic`, `curvy`, `petite`, `plus-size`, `tall`, `muscular`, `slim` |
+
+---
+
+## How It Works
+
+### 1. Tag Assignment
+
+Tags are assigned to content via:
+- **AI classification**: `scout-fast-tag:latest` model (custom SmolLM fine-tune)
+- **Manual tagging**: Creators can add/remove tags in Media Library UI
+- **ACTION flow**: `[ACTION:taxonomy-tag:{"media_id":"uuid"}]`
+
+**AI Classification Pipeline**:
+```mermaid
+graph LR
+    A[Upload media] --> B[scout-fast-tag:latest]
+    B --> C{Success?}
+    C -->|Yes| D[Write to taxonomy_assignments]
+    C -->|No| E[Fallback: phi-3.5:latest]
+    E --> D
+```
+
+### 2. Storage Schema
+
+**`taxonomy_dimensions`** (6 rows)
+```json
+{
+  "id": "uuid",
+  "name": "aesthetic",
+  "description": "Visual style and theme",
+  "sort_order": 1
+}
+```
+
+**`taxonomy_mapping`** (3,208 rows)
+```json
+{
+  "id": "uuid",
+  "dimension_id": "uuid",  // FK to taxonomy_dimensions
+  "tag": "glamour",
+  "description": "Luxurious, high-end visual presentation",
+  "parent_tag": null,  // For hierarchical tags
+  "platform_weight": {
+    "onlyfans": 1.2,
+    "fansly": 1.0,
+    "instagram": 0.8
+  }
+}
+```
+
+**`taxonomy_assignments`** (junction table)
+```json
+{
+  "id": "uuid",
+  "media_id": "uuid",  // FK to scraped_media
+  "tag_id": "uuid",    // FK to taxonomy_mapping
+  "confidence": 0.92,  // AI confidence score
+  "source": "ai",      // 'ai' | 'manual' | 'bulk'
+  "created_at": "2026-03-04T12:00:00Z"
+}
+```
+
+### 3. Tag Weighting
+
+Each tag has platform-specific weights to account for performance differences:
+
+**Example**: `glamour` tag
+- OnlyFans: 1.2 (performs 20% better than baseline)
+- Fansly: 1.0 (baseline performance)
+- Instagram: 0.8 (underperforms due to algorithm)
+
+Weights are used by:
+- `post-create` ACTION flow (selects high-weight tags for captions)
+- Analytics dashboards (filters low-performing content)
+- Content strategy recommendations
+
+---
+
+## Tag Hierarchy
+
+Some concepts support hierarchical tags:
+
+```
+aesthetic
+  └─ luxury
+      ├─ glamour
+      ├─ high-fashion
+      └─ designer
+  └─ vintage
+      ├─ retro
+      ├─ 80s
+      └─ pin-up
+```
+
+**Storage**: `parent_tag` field in `taxonomy_mapping` references another tag's ID
+
+**Inference**: When a child tag is assigned, the parent is implicitly included in search/filters
+
+---
+
+## Use Cases
+
+### Auto-Tagging Workflow
+
+1. Creator uploads 50 photos to Media Library
+2. Dashboard triggers `[ACTION:taxonomy-tag:{"media_id":"..."}]` for each
+3. `scout-fast-tag` classifies all 50 in ~25 seconds
+4. Tags written to `taxonomy_assignments` with confidence scores
+5. Creator reviews low-confidence tags (less than 0.7) and corrects if needed
+
+### Performance Analysis
+
+**Query**: "Which aesthetic performs best on OnlyFans?"
+
+```sql
+SELECT 
+  tm.tag,
+  AVG(sm.likes) as avg_likes,
+  COUNT(*) as post_count
+FROM taxonomy_assignments ta
+JOIN taxonomy_mapping tm ON ta.tag_id = tm.id
+JOIN taxonomy_dimensions td ON tm.dimension_id = td.id
+JOIN scraped_media sm ON ta.media_id = sm.id
+WHERE td.name = 'aesthetic'
+  AND sm.platform = 'onlyfans'
+GROUP BY tm.tag
+ORDER BY avg_likes DESC
+LIMIT 10;
+```
+
+### Content Search
+
+**Query**: "Show me all confident, glamour bedroom content"
+
+```json
+{
+  "filter": {
+    "taxonomy_assignments": {
+      "tag_id": {
+        "_in": [
+          "<confident_tag_uuid>",
+          "<glamour_tag_uuid>",
+          "<bedroom_tag_uuid>"
+        ]
+      }
+    }
+  }
+}
+```
+
+### Caption Generation
+
+**ACTION flow**: `post-create`
+
+1. Fetch media tags from `taxonomy_assignments`
+2. Filter to high-weight tags for target platform
+3. Pass to `dolphin-mistral:7b` with prompt:
+   ```
+   Write a seductive OnlyFans caption for an image with these tags:
+   - aesthetic: glamour, luxury
+   - mood: confident
+   - attire: lingerie
+   - setting: bedroom
+   ```
+4. Model outputs platform-optimized caption
+
+---
+
+## Tag Sources
+
+The 3,208 tags were compiled from:
+- **OnlyFans top 1000 creators**: Scraped captions and hashtags
+- **Adult content research**: Industry-standard categorization
+- **Manual curation**: Deduplicated, normalized, weighted
+- **User feedback**: Iteratively refined based on creator input
+
+---
+
+## AI Models Used
+
+| Model | Role | Speed | Accuracy |
+|-------|------|-------|----------|
+| `scout-fast-tag:latest` | Primary classifier | ~500ms/image | 92% (on test set) |
+| `phi-3.5:latest` | Fallback classifier | ~3-5s/image | 89% (more robust on edge cases) |
+
+**Training data**: 50,000 manually-tagged images from OnlyFans, Fansly, and ManyVids
+
+**Fine-tuning**: Custom LoRA on SmolLM base model (1.2B parameters)
+
+---
+
+## Platform-Specific Optimizations
+
+### OnlyFans
+
+**High-performing tags**:
+- `aesthetic`: glamour, luxury, intimate
+- `mood`: seductive, confident, playful
+- `attire`: lingerie, swimwear, latex
+
+**Caption style**: Direct, teasing, heavy emoji use
+
+### Fansly
+
+**High-performing tags**:
+- `aesthetic`: artistic, gothic, cosplay
+- `mood`: mysterious, dominant, creative
+- `attire`: cosplay, latex, alternative
+
+**Caption style**: Narrative, character-driven, fan interaction
+
+### Instagram (SFW subset)
+
+**Allowed tags** (NSFW tags excluded):
+- `aesthetic`: minimalist, vintage, luxury
+- `mood`: confident, playful, inspiring
+- `attire`: casual, swimwear, athletic
+
+**Caption style**: Aspirational, behind-the-scenes, lifestyle
+
+---
+
+## API Access
+
+### Read Tags for Media
+
+```bash
+GET /api/directus/items/taxonomy_assignments
+  ?filter[media_id][_eq]=<uuid>
+  &fields=*,tag_id.tag,tag_id.dimension_id.name
+```
+
+### Assign Tag (Manual)
+
+```bash
+POST /api/directus/items/taxonomy_assignments
+{
+  "media_id": "<uuid>",
+  "tag_id": "<uuid>",
+  "confidence": 1.0,
+  "source": "manual"
+}
+```
+
+### Trigger AI Tagging
+
+```bash
+POST /api/llm/chat
+{
+  "message": "[ACTION:taxonomy-tag:{\"media_id\":\"<uuid>\"}]"
+}
+```
+
+---
+
+## Roadmap
+
+### Planned Enhancements
+
+- **Tag suggestions**: "Creators who tagged X also tagged Y"
+- **Multi-language tags**: Spanish, French, German translations
+- **Video tags**: Temporal tags ("first 10s: teasing, 10-30s: reveal")
+- **Audio tags**: Music genre, spoken content, ASMR categories
+- **Engagement prediction**: ML model predicts likes based on tag combination
+
+### Known Limitations
+
+- **Context blind**: Tags describe what's in frame, not why ("Is this teasing or artistic?")
+- **Cultural bias**: Optimized for Western platforms (OnlyFans, Fansly)
+- **No temporal tags**: Video content treated as single frame
+- **Binary mood**: Can't capture mixed moods ("playful but dominant")
+
+---
+
+## Related
+
+- [Ollama Models](/ai/ollama-models) — scout-fast-tag and phi-3.5 classifiers
+- [Action Runner](/ai/action-runner) — `taxonomy-tag` flow definition
+- **Collections**:
+  - `taxonomy_dimensions` — 6 super-concepts
+  - `taxonomy_mapping` — 3,208 tags
+  - `taxonomy_assignments` — Media ↔ Tag junction table
+- **Graph data**: `Nodes/Universe/taxonomy_graph.json` — 3,205-node graph (legacy format)

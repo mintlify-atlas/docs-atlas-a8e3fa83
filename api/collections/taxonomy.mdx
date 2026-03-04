@@ -1,0 +1,332 @@
+---
+title: Taxonomy Collections
+description: 6-concept content classification system with 3,208 classified tags
+---
+
+## Overview
+
+The taxonomy system classifies creator content using 6 super-concept dimensions with 3,208 pre-classified tags. Two collections power this: `taxonomy_dimensions` for the classification schema, and `taxonomy_mapping` for tag assignments.
+
+---
+
+## taxonomy_dimensions
+
+Defines the 6 super-concept dimensions used for content classification.
+
+### Purpose
+
+- Define classification schema for content tagging
+- Store dimension names, descriptions, and allowed values
+- Enable AI-powered content discovery and recommendations
+- Support multi-dimensional content search
+
+### The 6 Dimensions
+
+| Dimension | Description | Example Values |
+|-----------|-------------|----------------|
+| `body_type` | Physical appearance and build | `athletic`, `curvy`, `petite`, `muscular`, `slim` |
+| `performance_style` | Content tone and presentation | `sensual`, `playful`, `dominant`, `submissive`, `artistic` |
+| `setting` | Location and environment | `bedroom`, `outdoor`, `bathroom`, `office`, `studio` |
+| `attire` | Clothing and accessories | `lingerie`, `casual`, `cosplay`, `fetish_wear`, `nude` |
+| `audience_appeal` | Target audience and niche | `mainstream`, `fetish`, `couples`, `solo`, `group` |
+| `production_quality` | Technical production level | `professional`, `amateur`, `selfie`, `cinematic` |
+
+### Key Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `dimension_name` | String | Unique dimension identifier (slug) |
+| `display_name` | String | Human-readable name |
+| `description` | Text | Dimension purpose and usage |
+| `allowed_values` | JSON | Array of valid tag values for this dimension |
+| `is_multi_select` | Boolean | Whether multiple values can be selected |
+| `sort_order` | Integer | Display order in UI |
+| `created_at` | DateTime | Dimension creation timestamp |
+
+### Example Queries
+
+#### List All Dimensions
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-items",
+  arguments: {
+    collection: "taxonomy_dimensions",
+    fields: ["id", "dimension_name", "display_name", "description"],
+    sort: ["sort_order"]
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/taxonomy_dimensions" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'sort=sort_order'
+```
+</CodeGroup>
+
+#### Get Dimension with Values
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-item",
+  arguments: {
+    collection: "taxonomy_dimensions",
+    id: "dimension-uuid",
+    fields: ["dimension_name", "display_name", "allowed_values", "is_multi_select"]
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/taxonomy_dimensions/DIMENSION_ID" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'fields=dimension_name,display_name,allowed_values,is_multi_select'
+```
+</CodeGroup>
+
+---
+
+## taxonomy_mapping
+
+Stores 3,208 pre-classified tags mapped across the 6 dimensions.
+
+### Purpose
+
+- Map platform-specific tags to taxonomy dimensions
+- Enable fast AI-powered content classification
+- Support content search and discovery
+- Provide training data for taxonomy classifiers
+
+### Classification System
+
+Each tag can have assignments across multiple dimensions:
+
+```json
+// Example: "yoga pants" tag mapping
+{
+  "tag": "yoga pants",
+  "platform_source": "onlyfans",
+  "dimension_mappings": {
+    "attire": ["activewear", "casual"],
+    "body_type": ["athletic", "fit"],
+    "setting": ["gym", "home"]
+  },
+  "confidence_score": 0.92
+}
+```
+
+### Key Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `tag` | String | Original tag text (normalized lowercase) |
+| `platform_source` | String | Platform where tag originated |
+| `dimension_mappings` | JSON | Object mapping dimension names to value arrays |
+| `confidence_score` | Decimal | Classification confidence (0.0-1.0) |
+| `usage_count` | Integer | How many times this tag has been applied |
+| `created_at` | DateTime | Mapping creation timestamp |
+| `updated_at` | DateTime | Last classification update |
+
+### Example Queries
+
+#### Search for Tag
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "search-items",
+  arguments: {
+    collection: "taxonomy_mapping",
+    query: "lingerie",
+    fields: ["tag", "dimension_mappings", "confidence_score"]
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/taxonomy_mapping" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'search=lingerie'
+```
+</CodeGroup>
+
+#### Get Tags by Dimension
+
+<CodeGroup>
+```javascript MCP Tool
+// Find all tags with "athletic" in body_type dimension
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-items",
+  arguments: {
+    collection: "taxonomy_mapping",
+    fields: ["tag", "dimension_mappings", "usage_count"],
+    filter: {
+      dimension_mappings: { _contains: "athletic" }
+    },
+    sort: ["-usage_count"],
+    limit: 50
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/taxonomy_mapping" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'filter[dimension_mappings][_contains]=athletic' \
+  --data-urlencode 'sort=-usage_count' \
+  --data-urlencode 'limit=50'
+```
+</CodeGroup>
+
+#### Create New Mapping
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "create-item",
+  arguments: {
+    collection: "taxonomy_mapping",
+    data: {
+      tag: "beach photoshoot",
+      platform_source: "onlyfans",
+      dimension_mappings: {
+        setting: ["outdoor", "beach"],
+        production_quality: ["professional"],
+        performance_style: ["artistic"]
+      },
+      confidence_score: 0.88
+    }
+  }
+});
+```
+
+```bash REST API
+curl -X POST "https://geniehelper.com/api/directus/items/taxonomy_mapping" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tag": "beach photoshoot",
+    "platform_source": "onlyfans",
+    "dimension_mappings": {
+      "setting": ["outdoor", "beach"],
+      "production_quality": ["professional"],
+      "performance_style": ["artistic"]
+    },
+    "confidence_score": 0.88
+  }'
+```
+</CodeGroup>
+
+## AI Classification
+
+The taxonomy system powers AI-powered content classification:
+
+### Action Flow
+
+Use the `taxonomy-tag` action flow to auto-classify content:
+
+```javascript
+// Agent emits action tag in chat response
+"[ACTION:taxonomy-tag:{\"media_id\":\"uuid-here\"}]"
+
+// Action runner executes flow:
+// 1. Fetch media item caption + metadata
+// 2. Call ollama MCP with scout-fast-tag model
+// 3. Match returned tags against taxonomy_mapping
+// 4. Apply dimension_mappings to media.taxonomy_tags
+// 5. Update scraped_media record
+```
+
+### Custom Taxonomy Model
+
+The `scout-fast-tag:latest` Ollama model is fine-tuned on the 3,208 taxonomy mappings:
+
+```javascript
+// Using ollama MCP to classify content
+await use_mcp_tool({
+  server_name: "ollama",
+  tool_name: "generate",
+  arguments: {
+    model: "scout-fast-tag:latest",
+    prompt: `Classify this content caption into taxonomy tags:\n\n"${caption}"`,
+    stream: false
+  }
+});
+```
+
+## Related Collections
+
+- **`scraped_media`** - Content items tagged with taxonomy classifications
+- **`action_flows`** - The `taxonomy-tag` flow that applies classifications
+- **`agent_audits`** - Logs of taxonomy classification executions
+
+## Workflow Integration
+
+### Content Classification Flow
+
+1. User uploads or scrapes new media with caption
+2. AI chat interface or dashboard triggers classification
+3. Agent emits `[ACTION:taxonomy-tag:{"media_id":"..."}]`
+4. Action runner fetches media caption + existing tags
+5. Calls Ollama `scout-fast-tag` model with caption
+6. Model returns relevant tags from 3,208 mapping corpus
+7. System looks up `taxonomy_mapping` for each tag
+8. Aggregates `dimension_mappings` into final classification
+9. Updates `scraped_media.taxonomy_tags` with result
+10. Content now discoverable via dimension-based search
+
+### Search and Discovery Flow
+
+1. User searches for "athletic outdoor content"
+2. System queries `taxonomy_mapping` for matching tags
+3. Finds tags with `body_type: ["athletic"]` AND `setting: ["outdoor"]`
+4. Queries `scraped_media` where `taxonomy_tags` contains those values
+5. Returns ranked results by engagement metrics
+
+## Best Practices
+
+1. **Normalize tags before lookup** - Convert to lowercase, trim whitespace
+2. **Use confidence thresholds** - Only apply mappings with `confidence_score >= 0.7`
+3. **Track usage** - Increment `usage_count` when applying classifications
+4. **Handle multi-select** - Check `taxonomy_dimensions.is_multi_select` before applying
+5. **Batch classify** - Process multiple media items in single taxonomy flow execution
+6. **Update existing classifications** - Re-run classification when captions are edited
+
+## Data Sources
+
+The 3,208 taxonomy mappings were sourced from:
+
+- OnlyFans tag corpus (2,400+ tags)
+- Fansly category system (600+ tags)
+- Manual classification of top 200 industry terms
+- Community-submitted classifications
+
+## Model Training
+
+The `scout-fast-tag` model was fine-tuned using:
+
+- **Base model**: SmolLM 135M parameters
+- **Training data**: `Nodes/Universe/taxonomy_graph.json` (3,205 nodes)
+- **Training script**: `Nodes/Universe/apply_taxonomy_assignments.py`
+- **Fine-tuning method**: HITL (Human-in-the-loop) corrections
+- **Accuracy**: 87% on validation set
+
+## See Also
+
+- [Media Collections](/api/collections/media) - Content that receives classifications
+- [Ollama MCP Tools](/api/mcp/ollama) - AI model inference for classification
+- [Action Runner](/api/action-runner) - Flow execution system

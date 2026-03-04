@@ -1,0 +1,169 @@
+---
+title: Project Structure
+description: Understanding the Genie Helper codebase layout and key directories
+---
+
+Genie Helper is built on AnythingLLM with custom extensions. This guide covers the codebase organization, key directories, and file structure to help you navigate the project effectively.
+
+## Directory Overview
+
+```
+agentx/
+├── scripts/          MCP servers + CLI utilities
+├── server/           AnythingLLM backend (Express + Prisma)
+├── dashboard/        React SPA (Vite + Tailwind + React Router v6)
+├── media-worker/     BullMQ media processing worker
+├── cms/              Directus extensions
+├── storage/          AnythingLLM persistent storage + MCP config
+├── docs/nginx/       Nginx vhost configs (Plesk reference)
+└── .claude/sessions/ Development session logs
+```
+
+## Core Server (`server/`)
+
+The server directory contains all backend logic built on top of AnythingLLM's Express server.
+
+### API Endpoints (`server/endpoints/api/`)
+
+| File | Route | Purpose |
+|------|-------|--------|
+| `genieChat.js` | `/api/genie/stream-chat` | Content gate + node RAG injection + SSE proxy to AnythingLLM |
+| `credentials.js` | `/api/credentials/*` | AES-256-GCM encrypted platform credential storage/retrieval |
+| `queue.js` | `/api/queue/*` | BullMQ job enqueue + stats API |
+| `captions.js` | `/api/captions/generate` | AI caption generation endpoint |
+| `register.js` | `/api/register` | Invite-gated registration proxy |
+| `impersonate.js` | `/api/impersonate/*` | Admin impersonation (session swap) |
+| `rbacSync.js` | `/api/rbac-sync/*` | Directus ↔ AnythingLLM user sync |
+| `onboarding.js` | `/api/onboarding` | State machine GET/PATCH + zip upload webhook |
+| `userProxy.js` | `/api/users/*` | User profile + file upload admin-token proxy |
+| `usage.js` | `/api/usage/*` | Plan usage tracking |
+
+### Utilities (`server/utils/`)
+
+| Directory/File | Purpose |
+|----------------|--------|
+| `actionRunner/` | Action flow executor (see [Custom Actions](/guides/custom-actions)) |
+| `credentialsCrypto.js` | AES-256-GCM encryption for platform credentials |
+| `boot/` | MCP server auto-boot on AnythingLLM startup |
+| `nodeRag.js` | Node RAG pipeline — top-15 weighted persona nodes, 5-min cache |
+| `cache/` | Extract cache and taxonomy cache implementations |
+| `actionBus.js` | BullMQ ActionBus interface |
+
+**Example: Credential Encryption**
+
+Platform credentials are encrypted server-side before storage:
+
+```javascript
+// server/utils/credentialsCrypto.js
+const { encryptJSON, decryptJSON } = require('./utils/credentialsCrypto');
+
+// Encrypt credentials
+const encrypted = encryptJSON({ username: 'user', password: 'pass' });
+// Returns: { enc: "v1:iv:tag:ciphertext" }
+
+// Decrypt credentials
+const decrypted = decryptJSON(encrypted);
+// Returns: { username: 'user', password: 'pass' }
+```
+
+Requires `CREDENTIALS_ENC_KEY_B64` environment variable (base64 of 32 bytes).
+
+## MCP Servers (`scripts/`)
+
+MCP (Model Context Protocol) servers expose external services as tools to the AI agent.
+
+| File | Tools | Purpose |
+|------|-------|--------|
+| `directus-mcp-server.mjs` | 17 tools | CRUD collections, trigger flows, manage users/files |
+| `ollama-mcp-server.mjs` | 3 tools | generate, chat, list-models |
+| `stagehand-mcp-server.mjs` | 9 tools | Browser automation (sessions, navigate, act, extract, cookies, screenshot) |
+
+See [Extending MCP](/guides/extending-mcp) for details on adding new tools.
+
+## Dashboard (`dashboard/`)
+
+React 18 SPA served from `dashboard/dist/` at `geniehelper.com/`.
+
+### Key Files
+
+| File | Purpose |
+|------|--------|
+| `src/utils/api.js` | Axios client — all Directus + AnythingLLM calls |
+| `src/utils/crypto.js` | Client-side encryption utilities |
+| `src/components/AgentWidget/` | Custom chat popup (replaces embed widget) |
+| `src/components/Brand/ThemeApplier.jsx` | CSS custom property injector from brand settings |
+| `src/components/Layout/Sidebar.jsx` | Nav sidebar + persona theme loader |
+| `src/pages/*` | Route pages (Dashboard, MediaLibrary, Settings, etc.) |
+
+### Routes
+
+**Public routes:**
+- `/` — Home
+- `/pricing`, `/about`, `/register`, `/login`
+
+**Authenticated routes:**
+- `/app/dashboard` — Main dashboard
+- `/app/media` — Media library
+- `/app/calendar` — Content calendar
+- `/app/fans` — Fan management
+- `/app/analytics` — Performance analytics
+- `/app/platforms` — Platform connections
+- `/app/settings` — User settings
+
+**Admin routes:**
+- `/admin` — Directus + AnythingLLM iframes
+- `/view-as` — User impersonation
+
+### Build Process
+
+```bash
+cd dashboard
+npm run build
+# Output: dashboard/dist/
+```
+
+Served by pm2 with `serve dashboard/dist/` (pm2 name: `genie-dashboard`).
+
+## Media Worker (`media-worker/`)
+
+BullMQ consumer that processes background jobs:
+
+- `scrape_profile` — Stagehand OF login + data extraction
+- `publish_post` — Stagehand-based cross-platform posting
+- `apply_watermark` — ImageMagick watermarking
+- `create_teaser` — FFmpeg video preview generation
+- `post_scheduler` — Polls `scheduled_posts` every 60s
+
+Runs as pm2 process (name: `media-worker`).
+
+## Storage (`storage/`)
+
+AnythingLLM persistent data:
+
+- `plugins/anythingllm_mcp_servers.json` — MCP server configuration (see [Extending MCP](/guides/extending-mcp))
+- Document vectors, user data, workspaces
+
+## Related Files Reference
+
+### Agent & AI
+
+- `server/utils/nodeRag.js` — `getOnboardingState()` + `getNodeContext()`
+- `Nodes/Universe/taxonomy_graph.json` — 3,205-node taxonomy graph
+- `Nodes/User/` — Per-user persona node storage
+
+### Planning & Tracking
+
+- `.claude/todos` — Phase backlog with agent assignments
+- `.claude/sessions/` — EOD session logs
+- `docs/nginx/` — Nginx config references
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Custom Actions" icon="bolt" href="/guides/custom-actions">
+    Create custom Action Runner flows
+  </Card>
+  <Card title="Extending MCP" icon="plug" href="/guides/extending-mcp">
+    Add new MCP tools and servers
+  </Card>
+</CardGroup>

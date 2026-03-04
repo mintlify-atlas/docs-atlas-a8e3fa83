@@ -1,0 +1,507 @@
+---
+title: Nginx Setup
+description: Nginx/Plesk configuration, proxy rules, and WebSocket support for Genie Helper
+---
+
+## Overview
+
+Genie Helper uses Nginx as a reverse proxy to provide a seamless user experience without exposing internal ports or requiring users to remember multiple URLs.
+
+**User-facing architecture**:
+- `geniehelper.com/` - React SPA (marketing, auth, dashboard)
+- `geniehelper.com/api/directus/` - Directus API proxy (port 8055)
+- `geniehelper.com/api/llm/` - AnythingLLM API + WebSocket proxy (port 3001)
+
+**Admin-only subdomains** (optional):
+- `cms.geniehelper.com` - Directus admin panel
+- `agent.geniehelper.com` - AnythingLLM admin UI
+
+## Plesk Setup
+
+All Nginx configuration is managed via **Plesk UI only**. Direct editing of Nginx config files will be overwritten by Plesk.
+
+### Critical Plesk Rules
+
+1. **NEVER add `location /`** - Plesk generates its own `location /` for static file serving. Adding another causes:
+   ```
+   nginx: [emerg] duplicate location "/"
+   ```
+
+2. **Safe location types**:
+   - Sub-path locations: `location /api/llm/`, `location /app/`
+   - Exact-match locations: `location = /exact-path`
+   - Regex locations: `location ~ /pattern/`
+
+3. **SPA routing**: Use `error_page 404 /index.html;` for client-side routing
+
+4. **WebSocket**: Use literal `"upgrade"` for Connection header, NOT `$http_upgrade`
+
+## Main Domain Configuration
+
+### Plesk Document Root Setup
+
+**Plesk > Domains > geniehelper.com > Hosting Settings**
+
+1. Set **Document root** to:
+   ```
+   /var/www/vhosts/geniehelper.com/agentx/dashboard/dist
+   ```
+
+2. This makes Plesk's auto-generated `location /` serve the built React SPA directly.
+
+### Additional Nginx Directives
+
+**Plesk > Domains > geniehelper.com > Apache & nginx Settings > Additional nginx directives**
+
+Paste the following configuration:
+
+```nginx
+# ── SPA fallback for client-side routing ──────────────────────
+# When a path like /pricing is requested, the file doesn't exist
+# on disk — this returns index.html so React Router handles it.
+error_page 404 /index.html;
+
+# ── API proxy: Directus CMS (8055) ────────────────────────────
+# No cookie gate — clients authenticate via Directus JWT Bearer tokens.
+location /api/directus/ {
+    proxy_pass         http://127.0.0.1:8055/;
+    proxy_http_version 1.1;
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Real-IP         $remote_addr;
+    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_read_timeout 120s;
+    # Allow larger uploads (media files, etc.)
+    client_max_body_size 100M;
+}
+
+# ── API proxy: AnythingLLM / AgentX server (3001) ─────────────
+# Includes REST + WebSocket endpoints (agent invocations, embed).
+# No cookie gate — clients authenticate via Directus JWT or API key.
+location /api/llm/ {
+    proxy_pass         http://127.0.0.1:3001/;
+    proxy_http_version 1.1;
+    proxy_set_header   Upgrade           $http_upgrade;
+    proxy_set_header   Connection        "upgrade";
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Real-IP         $remote_addr;
+    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_read_timeout 300s;
+    proxy_buffering    off;
+    client_max_body_size 3G;
+}
+```
+
+**After adding**: Click **OK** and **Apply** to reload Nginx.
+
+### Testing the Configuration
+
+```bash
+# Test Nginx config syntax
+sudo nginx -t
+
+# If valid, reload
+sudo systemctl reload nginx
+
+# Check status
+sudo systemctl status nginx
+```
+
+## Proxy Configuration Breakdown
+
+### SPA Fallback
+
+```nginx
+error_page 404 /index.html;
+```
+
+**Purpose**: Enables client-side routing for React Router.
+
+**How it works**:
+1. User navigates to `geniehelper.com/pricing`
+2. Nginx looks for file `dashboard/dist/pricing` → doesn't exist
+3. Instead of returning 404, returns `index.html`
+4. React Router loads and routes to `/pricing` component
+
+### Directus Proxy (`/api/directus/`)
+
+```nginx
+location /api/directus/ {
+    proxy_pass         http://127.0.0.1:8055/;
+    proxy_http_version 1.1;
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Real-IP         $remote_addr;
+    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_read_timeout 120s;
+    client_max_body_size 100M;
+}
+```
+
+**Key settings**:
+- `proxy_pass`: Strips `/api/directus/` prefix and forwards to Directus on port 8055
+- `X-Forwarded-*` headers: Preserve client IP and protocol for Directus logs
+- `client_max_body_size 100M`: Allow media file uploads
+- `proxy_read_timeout 120s`: Prevent timeout on slow requests
+
+**Example**:
+- Browser: `GET https://geniehelper.com/api/directus/items/scraped_media`
+- Nginx forwards to: `http://127.0.0.1:8055/items/scraped_media`
+
+### AnythingLLM Proxy (`/api/llm/`)
+
+```nginx
+location /api/llm/ {
+    proxy_pass         http://127.0.0.1:3001/;
+    proxy_http_version 1.1;
+    proxy_set_header   Upgrade           $http_upgrade;
+    proxy_set_header   Connection        "upgrade";
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Real-IP         $remote_addr;
+    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_read_timeout 300s;
+    proxy_buffering    off;
+    client_max_body_size 3G;
+}
+```
+
+**WebSocket support**:
+- `Upgrade` and `Connection "upgrade"` headers enable WebSocket connections
+- Required for streaming chat responses (SSE) and embed widget
+
+**CRITICAL**: Use literal `"upgrade"` for Connection header, NOT `$http_upgrade`:
+- Correct: `Connection "upgrade"`
+- Wrong: `Connection $http_upgrade` (causes WebSocket failures in some cases)
+
+**Key settings**:
+- `proxy_buffering off`: Required for streaming responses
+- `proxy_read_timeout 300s`: Long timeout for AI generation (5 minutes)
+- `client_max_body_size 3G`: Allow large document uploads
+
+**Example**:
+- Browser: `GET https://geniehelper.com/api/llm/embed/anythingllm-chat-widget.min.js`
+- Nginx forwards to: `http://127.0.0.1:3001/embed/anythingllm-chat-widget.min.js`
+
+## Admin Subdomain Configuration (Optional)
+
+### CMS Admin Panel (`cms.geniehelper.com`)
+
+**Plesk > Domains > cms.geniehelper.com > Apache & nginx Settings > Additional nginx directives**
+
+```nginx
+# ── Cookie gate (server context — no location conflict) ───────
+set $genie_proxy 0;
+if ($cookie_open_sesame = "true") { set $genie_proxy 1; }
+
+# ── Unlock / lock endpoints ───────────────────────────────────
+location = /open_sesame {
+    add_header Set-Cookie "open_sesame=true; Path=/; HttpOnly; Secure; SameSite=Strict" always;
+    return 302 /admin/;
+}
+location = /lock_sesame {
+    add_header Set-Cookie "open_sesame=; Path=/; Max-Age=0; Secure; SameSite=Strict" always;
+    return 302 /;
+}
+
+# ── Directus CMS (8055) — cookie gated, admin only ───────────
+location /admin/ {
+    if ($genie_proxy = 0) { return 302 /; }
+    proxy_pass         http://127.0.0.1:8055/;
+    proxy_http_version 1.1;
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Real-IP         $remote_addr;
+    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_read_timeout 120s;
+    client_max_body_size 100M;
+}
+```
+
+**Usage**:
+1. Visit `https://cms.geniehelper.com/open_sesame` to unlock
+2. Redirects to `/admin/` (Directus panel)
+3. Visit `https://cms.geniehelper.com/lock_sesame` to lock
+
+### Agent Admin Panel (`agent.geniehelper.com`)
+
+**Plesk > Domains > agent.geniehelper.com > Apache & nginx Settings > Additional nginx directives**
+
+```nginx
+# ── Cookie gate (server context — no location conflict) ───────
+set $genie_proxy 0;
+if ($cookie_open_sesame = "true") { set $genie_proxy 1; }
+
+# ── Unlock / lock endpoints ───────────────────────────────────
+location = /open_sesame {
+    add_header Set-Cookie "open_sesame=true; Path=/; HttpOnly; Secure; SameSite=Strict" always;
+    return 302 /chat/;
+}
+location = /lock_sesame {
+    add_header Set-Cookie "open_sesame=; Path=/; Max-Age=0; Secure; SameSite=Strict" always;
+    return 302 /;
+}
+
+# ── AnythingLLM Chat + Agent WebSocket (3001) ────────────────
+location /chat/ {
+    if ($genie_proxy = 0) { return 302 /; }
+    proxy_pass         http://127.0.0.1:3001/;
+    proxy_http_version 1.1;
+    proxy_set_header   Upgrade           $http_upgrade;
+    proxy_set_header   Connection        "upgrade";
+    proxy_set_header   Host              $host;
+    proxy_set_header   X-Real-IP         $remote_addr;
+    proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_read_timeout 300s;
+    proxy_buffering    off;
+}
+```
+
+**Usage**:
+1. Visit `https://agent.geniehelper.com/open_sesame` to unlock
+2. Redirects to `/chat/` (AnythingLLM UI)
+3. Visit `https://agent.geniehelper.com/lock_sesame` to lock
+
+## SSL/TLS Configuration
+
+### Let's Encrypt via Plesk
+
+**Plesk > Domains > geniehelper.com > SSL/TLS Certificates**
+
+1. Click **Install** next to Let's Encrypt
+2. Enter email for renewal notifications
+3. Check **Secure the domain name** and **Secure the www subdomain**
+4. Click **Get it free**
+5. Certificate auto-renews via Plesk cron
+
+**For subdomains**: Repeat for `cms.geniehelper.com` and `agent.geniehelper.com`
+
+### Force HTTPS Redirect
+
+**Plesk > Domains > geniehelper.com > Hosting Settings**
+
+1. Check **Permanent SEO-safe 301 redirect from HTTP to HTTPS**
+2. Click **OK**
+
+Plesk automatically adds:
+```nginx
+if ($scheme != "https") {
+    return 301 https://$host$request_uri;
+}
+```
+
+## Iframe Embedding (Admin Panel)
+
+The React admin panel (`/admin` route) embeds Directus and AnythingLLM in iframes. CSP headers must allow this.
+
+### AnythingLLM (server/.env)
+
+```bash
+IFRAME_PARENT_ORIGIN="https://geniehelper.com"
+```
+
+### Directus (cms/.env)
+
+```bash
+CONTENT_SECURITY_POLICY_DIRECTIVES__FRAME_ANCESTORS="https://geniehelper.com"
+```
+
+Without these, browsers will block iframe embedding with:
+```
+Refused to display 'https://cms.geniehelper.com/' in a frame because it set 'X-Frame-Options' to 'deny'.
+```
+
+## WebSocket Testing
+
+### Test WebSocket Connection
+
+```javascript
+// Browser console
+const ws = new WebSocket('wss://geniehelper.com/api/llm/socket');
+ws.onopen = () => console.log('Connected');
+ws.onmessage = (e) => console.log('Message:', e.data);
+ws.onerror = (e) => console.error('Error:', e);
+ws.onclose = () => console.log('Closed');
+```
+
+### Common WebSocket Issues
+
+**Symptom**: WebSocket connection fails with 400 or 502
+
+**Causes**:
+1. Missing `Upgrade` or `Connection` headers
+2. Incorrect `Connection` header value (use `"upgrade"` not `$http_upgrade`)
+3. Proxy buffering enabled (must be `off`)
+4. Timeout too short (increase `proxy_read_timeout`)
+
+**Debug**:
+```bash
+# Check Nginx error logs
+sudo tail -f /var/log/nginx/error.log
+
+# Check access logs
+sudo tail -f /var/log/nginx/access.log
+
+# Check AnythingLLM logs
+pm2 logs anything-llm --lines 100
+```
+
+## Performance Tuning
+
+### Nginx Worker Processes
+
+**Plesk > Tools & Settings > Apache & nginx Settings > nginx settings**
+
+Set worker processes to number of CPU cores:
+```nginx
+worker_processes auto;
+```
+
+### Connection Limits
+
+```nginx
+worker_connections 1024;
+```
+
+### Gzip Compression
+
+Plesk enables gzip by default. Verify in **Additional nginx directives** (server context):
+
+```nginx
+gzip on;
+gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+gzip_comp_level 6;
+```
+
+### Client Body Buffer
+
+For large file uploads, increase buffer size:
+
+```nginx
+client_body_buffer_size 128k;
+client_max_body_size 100M;  # Per-location override
+```
+
+## Security Hardening
+
+### Hide Nginx Version
+
+**Plesk > Tools & Settings > Security > Web Server Information Disclosure**
+
+Check **Hide**.
+
+Or add to Additional nginx directives (http context):
+```nginx
+server_tokens off;
+```
+
+### Rate Limiting (DDoS Protection)
+
+**Additional nginx directives (http context)**:
+
+```nginx
+limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=general:10m rate=50r/s;
+
+# Apply to API endpoints
+location /api/ {
+    limit_req zone=api burst=20 nodelay;
+    # ... rest of proxy config
+}
+```
+
+**Explanation**:
+- `rate=10r/s`: Max 10 requests per second per IP
+- `burst=20`: Allow bursts up to 20 requests
+- `nodelay`: Don't delay excess requests, reject immediately
+
+### IP Allowlist (Admin Subdomains)
+
+**Additional nginx directives**:
+
+```nginx
+# Only for cms.geniehelper.com or agent.geniehelper.com
+location /admin/ {
+    allow 203.0.113.0/24;  # Your office IP range
+    allow 198.51.100.42;   # Your home IP
+    deny all;
+    
+    # ... rest of proxy config
+}
+```
+
+## Troubleshooting
+
+### 502 Bad Gateway
+
+**Causes**:
+1. Backend service (Directus/AnythingLLM) is down
+2. Wrong port in `proxy_pass`
+3. Service not listening on 127.0.0.1
+
+**Debug**:
+```bash
+# Check if service is running
+pm2 status
+
+# Check if port is listening
+sudo netstat -tulpn | grep -E '3001|8055'
+
+# Test backend directly
+curl http://127.0.0.1:3001/api/ping
+curl http://127.0.0.1:8055/server/ping
+
+# Check Nginx logs
+sudo tail -f /var/log/nginx/error.log
+```
+
+### 404 Not Found on SPA Routes
+
+**Cause**: Missing `error_page 404 /index.html;`
+
+**Fix**: Add to Additional nginx directives and reload Nginx.
+
+### Nginx Won't Reload
+
+**Cause**: Syntax error in Additional nginx directives
+
+**Debug**:
+```bash
+# Test config
+sudo nginx -t
+
+# View specific error
+sudo nginx -T | grep -A 5 error
+```
+
+**Common errors**:
+- Duplicate `location /`
+- Missing semicolon
+- Incorrect directive context (server vs http vs location)
+
+### WebSocket Upgrade Failed
+
+**Cause**: Missing or incorrect WebSocket headers
+
+**Fix**: Ensure `/api/llm/` location has:
+```nginx
+proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection "upgrade";
+proxy_buffering off;
+```
+
+## Reference: Full Configs
+
+Full reference configs available in source:
+- `docs/nginx/geniehelper.com.vhost_nginx.conf` - Main domain
+- `docs/nginx/cms.geniehelper.com.vhost_nginx.conf` - CMS subdomain
+- `docs/nginx/agent.geniehelper.com.vhost_nginx.conf` - Agent subdomain
+
+## Next Steps
+
+- [Monitor services with PM2](/deployment/services)
+- [Optimize performance](/deployment/optimization) (coming soon)
+- [Set up backups](/deployment/backups) (coming soon)

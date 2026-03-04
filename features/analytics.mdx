@@ -1,0 +1,300 @@
+---
+title: "Analytics"
+description: "Fan insights, engagement tracking, and performance metrics dashboard"
+---
+
+## Overview
+
+The Analytics page aggregates data from `platform_connections`, `scraped_media`, and `taxonomy_mapping` to provide insights into content performance, fan engagement, and growth trends.
+
+**Page**: `dashboard/src/pages/Analytics/index.jsx`  
+**Collections**: `platform_connections`, `scraped_media`, `taxonomy_mapping`, `fan_profiles`
+
+## Metrics Tracked
+
+### Top-Level Stats
+
+| Metric | Source | Calculation |
+|--------|--------|-------------|
+| **Total Likes** | `scraped_media.likes_count` | Sum across all media |
+| **Total Comments** | `scraped_media.comments_count` | Sum across all media |
+| **Total Followers** | `platform_connections.follower_count` | Sum across all connected platforms |
+| **Monthly Revenue** | `platform_connections.monthly_revenue_est` | Sum of subscription estimates |
+
+**Implementation**: `dashboard/src/pages/Analytics/index.jsx:102-106`
+
+<CodeGroup>
+
+```javascript Analytics/index.jsx (Lines 102-106)
+const totalLikes = media.reduce((s, m) => s + (m.likes_count || 0), 0);
+const totalComments = media.reduce((s, m) => s + (m.comments_count || 0), 0);
+const totalRevenue = profiles.reduce((s, p) => s + (parseFloat(p.monthly_revenue_est) || 0), 0);
+const totalFollowers = profiles.reduce((s, p) => s + (p.follower_count || 0), 0);
+```
+
+</CodeGroup>
+
+### Platform Performance
+
+Ranked bar chart showing:
+- Platform name (from `platform_connections.platform`)
+- Follower count
+- Average likes per post
+- Engagement rate (`(likes + comments) / followers`)
+
+**Sorted by**: Followers (descending)
+
+### Top Content Tags
+
+**Source**: `taxonomy_mapping` collection (links media to 6-concept taxonomy)  
+**Display**: Bar chart of top 10 tags by frequency
+
+**Example tags**: `solo`, `lingerie`, `POV`, `outdoor`, `teasing`
+
+<CodeGroup>
+
+```javascript Analytics/index.jsx (Lines 112-119)
+const tagCounts = {};
+for (const t of taxonomy) {
+  if (t.tag_name) tagCounts[t.tag_name] = (tagCounts[t.tag_name] || 0) + 1;
+}
+
+const topTags = Object.entries(tagCounts)
+  .sort((a, b) => b[1] - a[1])
+  .slice(0, 10);
+```
+
+</CodeGroup>
+
+### Top Content by Likes
+
+List of top 8 posts ranked by `likes_count`:
+- Media type (image/video)
+- Posted date
+- Like count
+
+### Content Type Breakdown
+
+**Source**: `scraped_media.media_type`  
+**Chart**: Bar chart showing distribution (image, video, audio, unknown)
+
+## Data Loading
+
+**API Calls**: Parallel fetch on mount
+
+<CodeGroup>
+
+```javascript Analytics/index.jsx (Lines 72-95)
+async function load() {
+  setLoading(true);
+  try {
+    const [profRes, mediaRes, taxRes] = await Promise.all([
+      creators.list({
+        fields: 'id,platform,username,follower_count,avg_likes,avg_comments,engagement_rate,monthly_revenue_est,total_posts',
+        filter: { status: { _neq: 'disconnected' } },
+        limit: 20,
+      }),
+      collections.read('scraped_media', {
+        fields: 'id,media_type,likes_count,comments_count,posted_at,creator_profile_id',
+        sort: '-likes_count',
+        limit: 100,
+      }),
+      collections.read('taxonomy_mapping', {
+        fields: 'tag_name,media_id',
+        limit: 500,
+      }),
+    ]);
+    
+    setProfiles(profRes.data?.data || []);
+    setMedia(mediaRes.data?.data || []);
+    setTaxonomy(taxRes.data?.data || []);
+  } catch (e) {
+    setError(e.message);
+  } finally {
+    setLoading(false);
+  }
+}
+```
+
+</CodeGroup>
+
+## UI Components
+
+### StatCard
+
+Displays single metric with icon, value, and label.
+
+**Props**:
+- `icon` — Phosphor icon component
+- `label` — Metric name
+- `value` — Formatted number (e.g., "12.5K", "$450")
+- `color` — Tailwind text color class
+- `loading` — Boolean (shows skeleton)
+
+**Implementation**: `Analytics/index.jsx:28-38`
+
+### BarChart
+
+Inline sparkline-style horizontal bars.
+
+**Props**:
+- `data` — Array of objects
+- `labelKey` — Field for label (e.g., `"username"`)
+- `valueKey` — Field for bar width (e.g., `"followers"`)
+- `color` — Tailwind bg color class (e.g., `"bg-brand"`)
+
+**Features**:
+- Auto-scales to max value
+- Smooth width transitions (500ms)
+- Number formatting (12345 → "12.3K")
+
+**Implementation**: `Analytics/index.jsx:41-60`
+
+## Plan Gating
+
+**Feature**: `analytics_basic`  
+**Required Tier**: `creator` ($49/mo)
+
+**Component**: `<UpgradeGate>`  
+**Behavior**: Shows upgrade prompt if user is on Starter plan
+
+<CodeGroup>
+
+```jsx Analytics/index.jsx (Lines 141-142)
+export default function Analytics() {
+  return (
+    <UpgradeGate feature="analytics_basic" requiredTier="creator">
+      {/* Analytics content */}
+    </UpgradeGate>
+  );
+}
+```
+
+</CodeGroup>
+
+## Number Formatting
+
+**Helper functions**:
+
+<CodeGroup>
+
+```javascript Analytics/index.jsx (Lines 16-26)
+function fmt(n) {
+  if (n == null || n === 0) return '—';
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return String(n);
+}
+
+function fmtUsd(n) {
+  if (!n || n === 0) return '—';
+  return new Intl.NumberFormat('en-US', { 
+    style: 'currency', 
+    currency: 'USD', 
+    maximumFractionDigits: 0 
+  }).format(n);
+}
+```
+
+</CodeGroup>
+
+**Examples**:
+- `fmt(12345)` → `"12.3K"`
+- `fmt(1500000)` → `"1.5M"`
+- `fmtUsd(450)` → `"$450"`
+
+## Fan Insights
+
+**Page**: `dashboard/src/pages/FanInsights/index.jsx` (separate from Analytics)  
+**Collection**: `fan_profiles`
+
+### Fan Profile Schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `platform` | String | Source platform |
+| `username` | String | Fan's username |
+| `display_name` | String | Display name |
+| `last_interaction` | DateTime | Most recent message/comment |
+| `total_spent` | Decimal | Lifetime tips + purchases |
+| `engagement_score` | Integer | 0-100 (likes + comments frequency) |
+| `tags` | Array | Manual tags (VIP, high-spender, new) |
+| `notes` | Text | Creator notes |
+
+### Insights Tracked
+
+1. **Top Spenders** — Ranked by `total_spent`
+2. **Most Engaged** — Ranked by `engagement_score`
+3. **Recent Interactions** — Last 10 by `last_interaction`
+4. **VIP List** — Filtered by `tags` contains "VIP"
+
+## Taxonomy System
+
+**Collections**:
+- `taxonomy_dimensions` — 6 super-concepts (Intimacy, Aesthetic, Activity, Gaze, Location, Extras)
+- `taxonomy_mapping` — 3,208 classified tags across 6 concepts
+
+**Use in Analytics**: Content tag breakdown shows which concepts perform best (e.g., "solo" gets 2x engagement vs "group")
+
+**Graph**: `Nodes/Universe/taxonomy_graph.json` (18 super-concepts, 3,205 nodes)
+
+## Revenue Estimation
+
+**Field**: `platform_connections.monthly_revenue_est`  
+**Calculation**: `subscription_price × follower_count × 0.05` (assumes 5% conversion)
+
+<Warning>
+Revenue estimates are **approximations** based on industry averages. Actual revenue varies by platform, content type, and fan engagement.
+</Warning>
+
+**Example**:
+- Platform: OnlyFans
+- Followers: 10,000
+- Subscription: $9.99/mo
+- Estimated revenue: `10000 × 0.05 × 9.99 = $4,995/mo`
+
+## Performance Optimization
+
+### Data Limits
+
+- `scraped_media`: 100 most recent (sorted by `likes_count`)
+- `taxonomy_mapping`: 500 most recent
+- `platform_connections`: 20 max
+
+**Why**: Dashboard should load in less than 2 seconds. Full history available via Directus admin panel.
+
+### Caching Strategy
+
+**Current**: No caching (live data on every load)  
+**Future**: 5-minute cache in Redis for aggregates
+
+## Refresh Button
+
+**Component**: `<ArrowsClockwise>` icon button (top-right)  
+**Behavior**: Calls `load()` → Re-fetches all data → Updates UI
+
+<CodeGroup>
+
+```jsx Analytics/index.jsx (Lines 148-150)
+<button onClick={load} className="btn-secondary flex items-center gap-2 text-sm" disabled={loading}>
+  <ArrowsClockwise size={15} className={loading ? 'animate-spin' : ''} /> Refresh
+</button>
+```
+
+</CodeGroup>
+
+## Empty States
+
+**Trigger**: No data in collections (e.g., new user, no scrapes yet)
+
+**UI**: Centered message with icon:
+- "No platform data — connect a platform first."
+- "No taxonomy tags yet — run a scrape and analysis."
+- "No scraped media yet."
+
+## Related
+
+- [Platform Scraping](/features/platform-scraping) — Data source for analytics
+- [Dashboard](/features/dashboard) — Main navigation
+- [AI Agent](/features/ai-agent) — Query analytics via chat

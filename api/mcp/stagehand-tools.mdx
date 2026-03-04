@@ -1,0 +1,689 @@
+---
+title: Stagehand MCP Tools
+description: Complete reference for all 9 Stagehand browser automation tools
+---
+
+The Stagehand MCP server provides 9 tools for AI-powered browser automation. These tools enable session management, navigation, natural language actions, data extraction, and cookie manipulation.
+
+**Server name:** `stagehand`
+**Version:** 1.0.0
+**Script:** `scripts/stagehand-mcp-server.mjs`
+
+## Environment Variables
+
+```bash
+STAGEHAND_URL=http://127.0.0.1:3002
+STAGEHAND_MODEL=ollama/qwen-2.5
+```
+
+---
+
+## Architecture
+
+Stagehand wraps a browser automation server (port 3002) and exposes it as MCP tools. Each browser session:
+
+- Uses Chromium with stealth mode (`--disable-blink-features=AutomationControlled`)
+- Runs at 1920x1080 resolution
+- Can run headless or with visible UI
+- Maintains independent cookie stores and state
+- Consumes ~300MB RAM per active session
+
+**Resource limits:** ~33 concurrent sessions on 10GB available RAM.
+
+---
+
+## Workflow Pattern
+
+1. **Start session** → get `session_id`
+2. **Navigate** to target URL
+3. **Act** / **Extract** / **Observe** as needed
+4. **Screenshot** for debugging (optional)
+5. **Close session** when done
+
+**Cookie-based authentication:**
+1. **Start session** → get `session_id`
+2. **Set cookies** from browser extension capture
+3. **Navigate** to authenticated page (bypasses login)
+4. **Act** / **Extract** data
+5. **Close session**
+
+---
+
+## start-session
+
+Start a new Stagehand browser session. Returns a session ID used by all other tools.
+
+**Parameters:**
+- `headless` (boolean, optional): Run headless (default: `true`)
+
+**Returns:** Session object with `session_id` and metadata.
+
+**Example 1: Headless session (default)**
+```json
+{
+  "headless": true
+}
+```
+
+**Response:**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "status": "active",
+  "created_at": "2026-03-04T10:15:30Z"
+}
+```
+
+**Example 2: Visible browser (for debugging)**
+```json
+{
+  "headless": false
+}
+```
+
+**Use cases:**
+- Platform scraping (OnlyFans, Fansly, etc.)
+- Social media posting automation
+- Content extraction from authenticated pages
+- HITL (human-in-the-loop) login workflows
+
+---
+
+## navigate
+
+Navigate the browser to a URL in an existing session.
+
+**Parameters:**
+- `session_id` (string, required): Session ID from `start-session`
+- `url` (string, required): URL to navigate to
+
+**Returns:** Navigation result with status.
+
+**Example:**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "url": "https://onlyfans.com/my/profile"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "url": "https://onlyfans.com/my/profile",
+  "loaded_at": "2026-03-04T10:15:32Z"
+}
+```
+
+**Tips:**
+- Always call `navigate` before interacting with page elements
+- Wait for page load to complete before calling `act` or `extract`
+- Use with `set-cookies` for authenticated navigation
+
+---
+
+## act
+
+Perform a browser action using natural language (click, type, scroll, etc.).
+
+**This is Stagehand's core AI-powered feature** — it understands natural language instructions and translates them to browser actions.
+
+**Parameters:**
+- `session_id` (string, required): Session ID from `start-session`
+- `action` (string, required): Natural language action description
+
+**Returns:** Action result with status.
+
+**Example 1: Click action**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "action": "Click the 'New Post' button"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "action": "click",
+  "element": "button.new-post",
+  "completed_at": "2026-03-04T10:15:35Z"
+}
+```
+
+**Example 2: Type action**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "action": "Type 'Check out my new content!' into the post text area"
+}
+```
+
+**Example 3: Complex multi-step**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "action": "Scroll down to the bottom of the page, then click the 'Load More' button"
+}
+```
+
+**Example 4: Conditional action**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "action": "If there is a cookie consent banner, click Accept"
+}
+```
+
+**Supported actions:**
+- Click elements (buttons, links, etc.)
+- Type text into inputs/textareas
+- Scroll (up, down, to element)
+- Select dropdown options
+- Upload files
+- Press keyboard keys
+- Hover over elements
+- Drag and drop
+
+**Best practices:**
+- Use clear, specific descriptions ("Click the blue 'Submit' button" vs "click button")
+- Reference visual landmarks when multiple similar elements exist
+- Break complex workflows into multiple `act` calls
+- Check results with `screenshot` if action fails
+
+---
+
+## extract
+
+Extract structured data from the current page using a schema description.
+
+**This is Stagehand's AI-powered data scraping** — it understands what data you want and extracts it intelligently.
+
+**Parameters:**
+- `session_id` (string, required): Session ID from `start-session`
+- `instruction` (string, required): What to extract (natural language)
+- `schema` (object, optional): Optional JSON schema describing the output structure
+
+**Returns:** Extracted data matching the schema.
+
+**Example 1: Simple extraction**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "instruction": "Extract the post title, like count, and comment count"
+}
+```
+
+**Response:**
+```json
+{
+  "title": "Beach Day Vibes ☀️",
+  "likes": 1247,
+  "comments": 89
+}
+```
+
+**Example 2: With schema**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "instruction": "Extract all posts from the feed",
+  "schema": {
+    "posts": [
+      {
+        "id": "string",
+        "title": "string",
+        "likes": "number",
+        "comments": "number",
+        "posted_date": "string",
+        "media_type": "string"
+      }
+    ]
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "posts": [
+    {
+      "id": "post_123",
+      "title": "Beach Day Vibes ☀️",
+      "likes": 1247,
+      "comments": 89,
+      "posted_date": "2 hours ago",
+      "media_type": "image"
+    },
+    {
+      "id": "post_124",
+      "title": "New video out now!",
+      "likes": 2103,
+      "comments": 156,
+      "posted_date": "5 hours ago",
+      "media_type": "video"
+    }
+  ]
+}
+```
+
+**Example 3: Profile stats**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "instruction": "Extract profile statistics: followers, following, total posts, and earnings",
+  "schema": {
+    "followers": "number",
+    "following": "number",
+    "total_posts": "number",
+    "earnings": "string"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "followers": 8742,
+  "following": 234,
+  "total_posts": 487,
+  "earnings": "$12,450"
+}
+```
+
+**Use cases:**
+- Platform statistics scraping
+- Content feed extraction
+- Fan engagement metrics
+- Earnings data collection
+- Post metadata gathering
+
+---
+
+## observe
+
+Observe interactive elements on the current page.
+
+**Parameters:**
+- `session_id` (string, required): Session ID from `start-session`
+- `instruction` (string, optional): What to look for (e.g. "Find all clickable buttons")
+
+**Returns:** List of observed elements with selectors and descriptions.
+
+**Example 1: Find all buttons**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "instruction": "Find all clickable buttons"
+}
+```
+
+**Response:**
+```json
+{
+  "elements": [
+    {
+      "selector": "button.post-create",
+      "text": "New Post",
+      "type": "button"
+    },
+    {
+      "selector": "button.message-send",
+      "text": "Send Message",
+      "type": "button"
+    },
+    {
+      "selector": "a.settings-link",
+      "text": "Settings",
+      "type": "link"
+    }
+  ]
+}
+```
+
+**Example 2: Find input fields**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "instruction": "Find all input fields on this page"
+}
+```
+
+**Use cases:**
+- Debug why `act` isn't finding an element
+- Discover available interactions on a page
+- Validate page structure before automation
+
+---
+
+## screenshot
+
+Take a screenshot of the current browser page.
+
+**Parameters:**
+- `session_id` (string, required): Session ID from `start-session`
+
+**Returns:** Screenshot data (typically base64-encoded image).
+
+**Example:**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6"
+}
+```
+
+**Response:**
+```json
+{
+  "screenshot": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
+  "format": "png",
+  "timestamp": "2026-03-04T10:15:40Z"
+}
+```
+
+**Use cases:**
+- Debug failed automation steps
+- Verify page state before/after actions
+- Capture visual confirmation of task completion
+- Generate proof-of-posting for scheduling
+
+---
+
+## get-cookies
+
+Get all cookies from the current browser session.
+
+**Parameters:**
+- `session_id` (string, required): Session ID from `start-session`
+
+**Returns:** Array of cookie objects.
+
+**Example:**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6"
+}
+```
+
+**Response:**
+```json
+{
+  "cookies": [
+    {
+      "name": "auth_token",
+      "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "domain": ".onlyfans.com",
+      "path": "/",
+      "expires": 1741276800,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "session_id",
+      "value": "abc123def456",
+      "domain": ".onlyfans.com",
+      "path": "/",
+      "expires": 1741276800,
+      "httpOnly": true,
+      "secure": true
+    }
+  ]
+}
+```
+
+**Use cases:**
+- Save cookies after manual login (HITL flow)
+- Store session tokens for future automation
+- Transfer authentication between sessions
+
+---
+
+## set-cookies
+
+Inject cookies into the browser session (for bypassing login).
+
+**This is the core of Genie Helper's cookie-based authentication flow.**
+
+**Parameters:**
+- `session_id` (string, required): Session ID from `start-session`
+- `cookies` (array, required): Array of cookie objects `[{name, value, domain, path, ...}]`
+
+**Returns:** Success confirmation.
+
+**Example:**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6",
+  "cookies": [
+    {
+      "name": "auth_token",
+      "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "domain": ".onlyfans.com",
+      "path": "/",
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "session_id",
+      "value": "abc123def456",
+      "domain": ".onlyfans.com",
+      "path": "/"
+    }
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "cookies_set": 2
+}
+```
+
+**Cookie sources:**
+1. **Browser extension capture** (primary) — user exports cookies from authenticated session
+2. **HITL login flow** — user logs in manually, Stagehand captures cookies via `get-cookies`
+3. **Stored credentials** — cookies retrieved from Directus `platform_sessions` collection
+
+**Authentication workflow:**
+```
+1. start-session → session_id
+2. set-cookies → inject auth tokens
+3. navigate → authenticated page (no login required)
+4. extract → scrape protected data
+5. close-session
+```
+
+**Important:**
+- Set cookies BEFORE navigating to the target site
+- Ensure `domain` includes the leading dot (`.onlyfans.com` not `onlyfans.com`)
+- Include all authentication cookies (not just the main token)
+- Check cookie expiry before use
+
+---
+
+## close-session
+
+End and clean up a browser session.
+
+**Always call this when done** to free up system resources (300MB RAM per session).
+
+**Parameters:**
+- `session_id` (string, required): Session ID to close
+
+**Returns:** Confirmation of closure.
+
+**Example:**
+```json
+{
+  "session_id": "sess_a1b2c3d4e5f6"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "closed",
+  "session_id": "sess_a1b2c3d4e5f6",
+  "duration": "45s"
+}
+```
+
+**Best practices:**
+- Always close sessions in a `finally` block (if using programmatically)
+- Don't leave sessions idle — they consume RAM
+- Close immediately after task completion
+- Monitor active sessions with resource tracking
+
+---
+
+## Complete Scraping Example
+
+Here's a full OnlyFans profile scraping workflow:
+
+**1. Start session**
+```json
+{"headless": true}
+```
+→ Get `session_id`
+
+**2. Set cookies (from browser extension)**
+```json
+{
+  "session_id": "sess_xyz",
+  "cookies": [{"name": "auth_token", "value": "...", "domain": ".onlyfans.com"}]
+}
+```
+
+**3. Navigate to profile**
+```json
+{
+  "session_id": "sess_xyz",
+  "url": "https://onlyfans.com/my/profile"
+}
+```
+
+**4. Extract profile stats**
+```json
+{
+  "session_id": "sess_xyz",
+  "instruction": "Extract followers, following, total posts, and total earnings",
+  "schema": {
+    "followers": "number",
+    "following": "number",
+    "posts": "number",
+    "earnings": "string"
+  }
+}
+```
+
+**5. Navigate to posts feed**
+```json
+{
+  "session_id": "sess_xyz",
+  "url": "https://onlyfans.com/my/posts"
+}
+```
+
+**6. Extract post data**
+```json
+{
+  "session_id": "sess_xyz",
+  "instruction": "Extract all visible posts with title, likes, comments, and date",
+  "schema": {
+    "posts": [{"title": "string", "likes": "number", "comments": "number", "date": "string"}]
+  }
+}
+```
+
+**7. Close session**
+```json
+{"session_id": "sess_xyz"}
+```
+
+---
+
+## Error Handling
+
+All Stagehand tools surface HTTP errors to the agent:
+
+**Session not found:**
+```
+Stagehand error 404: Session not found
+```
+Solution: Verify session_id or start a new session
+
+**Element not found:**
+```
+Stagehand error 422: Could not find element matching "Click the XYZ button"
+```
+Solution: Use `observe` to find available elements, or rephrase action description
+
+**Navigation failed:**
+```
+Stagehand error 500: Navigation timeout
+```
+Solution: Check URL validity, network connectivity, or increase timeout
+
+**Server unavailable:**
+```
+Stagehand error 503: Service temporarily unavailable
+```
+Solution: Check if Stagehand server (port 3002) is running
+
+---
+
+## Performance & Limits
+
+**Session limits:**
+- Max concurrent sessions: ~33 (on 10GB available RAM)
+- RAM per session: ~300MB
+- Session timeout: Auto-closes after 30 minutes idle
+
+**Operation timing:**
+- `start-session`: ~2-3s
+- `navigate`: ~1-3s (depending on page load)
+- `act`: ~2-5s (AI inference + action execution)
+- `extract`: ~3-8s (AI inference + data scraping)
+- `screenshot`: ~0.5-1s
+- `set-cookies` / `get-cookies`: ~0.1s
+- `close-session`: ~0.5s
+
+**Recommendations:**
+- Reuse sessions for multiple operations on the same site
+- Close sessions immediately when done
+- Use headless mode for production (faster, less RAM)
+- Batch extractions when possible (one `extract` with complex schema vs multiple calls)
+
+---
+
+## Stealth Mode
+
+All Stagehand sessions use anti-detection measures:
+
+```javascript
+[
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-dev-shm-usage",
+  "--disable-blink-features=AutomationControlled",  // Hide automation
+  "--window-size=1920,1080"                          // Standard resolution
+]
+```
+
+**Platform detection resistance:**
+- No `navigator.webdriver` flag
+- Standard user agent strings
+- Real browser fingerprint
+- Human-like interaction timing (built into Stagehand AI)
+
+**Best practices for stealth:**
+- Use cookies from real browser sessions (not manual login automation)
+- Add delays between actions (Stagehand does this automatically)
+- Don't scrape too aggressively (rate limit your requests)
+- Rotate sessions periodically

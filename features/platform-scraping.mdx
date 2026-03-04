@@ -1,0 +1,351 @@
+---
+title: "Platform Scraping"
+description: "Stagehand browser automation for scraping creator platforms with cookie-first HITL fallback"
+---
+
+## Overview
+
+Genie Helper uses **Stagehand** (Playwright + vision LLM) to scrape creator profiles from OnlyFans, Fansly, and other platforms. The scraper supports cookie-based authentication, username/password login, and Twitter/X OAuth flows.
+
+**Operation**: `scrape_profile` (media-worker)  
+**Browser**: Local Playwright (headless Chrome)  
+**Vision LLM**: `ollama/qwen-2.5` for page understanding
+
+## Architecture
+
+### Scraping Flow
+
+```
+Dashboard "Let's Go" button
+  ↓
+Create media_jobs record (operation: scrape_profile)
+  ↓
+Media worker picks job
+  ↓
+Stagehand session starts
+  ↓
+Inject cookies from platform_sessions (if available)
+  ↓
+Navigate to creator profile URL
+  ↓
+Check if login wall detected (LLM: "Is this login or profile?")
+  ↓ (if login)
+Try credential-based login (email/password or X OAuth)
+  ↓ (if no auth available)
+Create hitl_sessions record → Show yellow banner in Dashboard
+  ↓
+User completes login via browser extension
+  ↓
+Extension captures cookies → platform_sessions
+  ↓
+Retry scrape → Cookie injection → Success
+  ↓
+Extract profile stats (followers, posts, bio, subscription price)
+  ↓
+Extract recent posts (captions, likes, comments, dates)
+  ↓
+Write to scraped_media + platform_connections
+  ↓
+Update scrape_status: idle
+```
+
+## Authentication Methods
+
+The scraper supports **3 authentication types** (stored in `platform_connections.auth_type`):
+
+### 1. Cookie-Only (Recommended)
+
+**Flow**: User logs in via browser extension → Extension captures cookies → Scraper injects cookies on next run
+
+**Pros**:
+- Most reliable (no credential validation)
+- Works with 2FA, Google SSO, magic links
+- Bypasses bot detection
+
+**Cons**:
+- Requires manual login once every 30-90 days (cookie expiry)
+
+**Dashboard Setup**: Select "Cookie-only (most reliable)" during platform connection
+
+### 2. Email/Password
+
+**Flow**: Scraper navigates to login page → Fills email + password fields → Clicks sign-in button
+
+**Pros**:
+- Fully automated (no user interaction)
+- Works for platforms without 2FA
+
+**Cons**:
+- May trigger CAPTCHA or bot detection
+- Fails if 2FA is enabled
+
+**Implementation**: `media-worker/index.js:731-739`
+
+<CodeGroup>
+
+```javascript media-worker/index.js (Lines 731-739)
+if (authType === "email_password" && creds?.password) {
+  await sPost(`/v1/sessions/${sid}/navigate`, { url: urls.login });
+  await sPost(`/v1/sessions/${sid}/act`, {
+    action: `Fill the email/username field with "${creds.username}" and the password field with the stored password, then click the sign-in button`,
+    modelName: STAGEHAND_MODEL,
+  });
+  await new Promise(r => setTimeout(r, 4000));
+  loggedIn = true;
+}
+```
+
+</CodeGroup>
+
+### 3. Twitter/X OAuth
+
+**Flow**: Scraper clicks "Sign in with X" → Fills X credentials → OnlyFans/Fansly redirects back
+
+**Supported platforms**: OnlyFans, Fansly  
+**Credentials**: `x_username` + `x_password` (separate from platform credentials)
+
+**Implementation**: `media-worker/index.js:708-728`
+
+<CodeGroup>
+
+```javascript media-worker/index.js (Lines 708-728)
+if (authType === "twitter_oauth" && creds?.x_password) {
+  await sPost(`/v1/sessions/${sid}/navigate`, { url: urls.login });
+  
+  // Click "Sign in with X" button
+  await sPost(`/v1/sessions/${sid}/act`, {
+    action: 'Find and click the "Sign in with X" or "Continue with Twitter" button',
+    modelName: STAGEHAND_MODEL,
+  });
+  await new Promise(r => setTimeout(r, 3500));
+  
+  // Fill X credentials
+  await sPost(`/v1/sessions/${sid}/act`, {
+    action: `Fill the username field with "${creds.x_username}", press Next, then fill the password field and click Sign in`,
+    modelName: STAGEHAND_MODEL,
+  });
+  await new Promise(r => setTimeout(r, 5000));
+  
+  loggedIn = true;
+}
+```
+
+</CodeGroup>
+
+## HITL (Human-in-the-Loop) System
+
+**HITL** is triggered when:
+- No cookies available in `platform_sessions`
+- No credentials stored (auth_type: `cookie_only`)
+- Login fails (CAPTCHA, 2FA, or expired cookies)
+
+### Flow
+
+1. Scraper creates `hitl_sessions` record:
+   ```json
+   {
+     "status": "pending",
+     "platform": "onlyfans",
+     "login_url": "https://onlyfans.com/login",
+     "reason": "Login required to scrape @username's profile",
+     "creator_profile_id": "abc123"
+   }
+   ```
+
+2. Dashboard shows **yellow banner**:
+   ```
+   ⚠️ Login Required
+   We need your help to access OnlyFans. Install the browser extension and log in.
+   ```
+
+3. User clicks **"Download Extension"** → Installs from `public/extension/`
+
+4. User navigates to platform and logs in normally
+
+5. Extension captures cookies → Sends to `/api/credentials/store-platform-session`
+
+6. Backend encrypts cookies → Stores in `platform_sessions.encrypted_cookies`
+
+7. Dashboard shows **green checkmark** → User clicks "Let's Go" again
+
+8. Scraper injects cookies → Bypass login wall → Success
+
+**Implementation**: `dashboard/src/pages/Dashboard/index.jsx` (banner) + browser extension
+
+## Data Extraction
+
+### Profile Stats
+
+**Extracted fields**:
+- `follower_count` — Total subscribers/followers
+- `post_count` — Total posts published
+- `subscription_price` — Monthly price (e.g., "$9.99" or "Free")
+- `bio_text` — Profile biography
+
+**LLM Instruction**: `media-worker/index.js:762-770`
+
+<CodeGroup>
+
+```javascript media-worker/index.js (Lines 762-770)
+const statsEx = await sPost(`/v1/sessions/${sid}/extract`, {
+  instruction: `Extract this ${platform} creator's statistics: total follower/subscriber count, total post count, monthly subscription price, and profile bio text.`,
+  schema: {
+    follower_count: "number: total followers (integer, 0 if not visible)",
+    post_count: "number: total posts (integer, 0 if not visible)",
+    subscription_price: "string: subscription price like $9.99 or Free",
+    bio_text: "string: profile biography text",
+  },
+});
+```
+
+</CodeGroup>
+
+### Recent Posts
+
+**Extracted per post**:
+- `caption` — Post text (max 500 chars)
+- `posted_at` — Date string (e.g., "Jan 15" or "2 days ago")
+- `likes_count` — Like count (0 if not shown)
+- `comments_count` — Comment count (0 if not shown)
+
+**Limit**: 30 most recent posts  
+**Storage**: `scraped_media` collection
+
+**Implementation**: `media-worker/index.js:776-800`
+
+## Supported Platforms
+
+| Platform | Status | Auth Methods | Notes |
+|----------|--------|--------------|-------|
+| **OnlyFans** | ✅ Full | Cookie, Email, X OAuth | Main platform |
+| **Fansly** | ✅ Full | Cookie, Email, X OAuth | Similar to OF |
+| Instagram | 🚧 Partial | Cookie only | High bot detection |
+| TikTok | 🚧 Partial | Cookie only | Requires mobile user-agent |
+| X/Twitter | 🚧 Partial | Cookie only | Rate limits apply |
+| Reddit | 🚧 Partial | Cookie, Password | Subreddit-specific |
+| Patreon | 📅 Planned | TBD | |
+| ManyVids | 📅 Planned | TBD | |
+
+**Platform URLs**: `media-worker/index.js:641-645`
+
+<CodeGroup>
+
+```javascript media-worker/index.js (Lines 641-645)
+const PLATFORM_URLS = {
+  onlyfans: { profile: `https://onlyfans.com/${username}`, login: "https://onlyfans.com/login" },
+  fansly:   { profile: `https://fansly.com/${username}`,   login: "https://fansly.com/login" },
+};
+```
+
+</CodeGroup>
+
+## Scrape Status States
+
+Stored in `platform_connections.scrape_status`:
+
+| Status | Meaning | Next Action |
+|--------|---------|-------------|
+| `idle` | Ready to scrape | Click "Scrape Now" |
+| `scraping` | In progress | Wait (auto-updates) |
+| `hitl_required` | Login needed | Install extension + log in |
+| `failed` | Error occurred | Check error message + retry |
+
+**Status Updates**: `media-worker/index.js:629,754,811,849`
+
+## Browser Extension
+
+**Path**: `public/extension/` (Firefox + Chrome manifest)  
+**Size**: ~15KB (no external dependencies)
+
+### Features
+
+- Captures cookies on command (user clicks extension icon)
+- Encrypts cookies client-side (AES-256-GCM)
+- Sends to `/api/credentials/store-platform-session`
+- Auto-detects platform from current URL
+- Works on all 18 supported platforms
+
+### Installation
+
+**Firefox**:
+1. Download `extension.zip` from Dashboard
+2. Open `about:debugging#/runtime/this-firefox`
+3. Click "Load Temporary Add-on"
+4. Select `manifest.json`
+
+**Chrome**:
+1. Download `extension.zip`
+2. Open `chrome://extensions`
+3. Enable "Developer mode"
+4. Click "Load unpacked" → Select extension folder
+
+**Download Link**: Dashboard → Platforms → "Download Browser Extension"
+
+## Metadata Stripping
+
+All scraped images are **auto-stripped** of EXIF/GPS metadata before upload to Directus.
+
+**Implementation**: `media-worker/index.js:817-835`
+
+<CodeGroup>
+
+```javascript media-worker/index.js (Lines 817-835)
+try {
+  const tmpFiles = fs.readdirSync(workDir);
+  const imageExts = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+  
+  for (const fname of tmpFiles) {
+    const fext = path.extname(fname).toLowerCase();
+    if (!imageExts.has(fext)) continue;
+    
+    const fPath = path.join(workDir, fname);
+    const stripped = path.join(workDir, `stripped_${fname}`);
+    
+    await stripImageMetadata(fPath, stripped);
+    
+    // Replace original with stripped version
+    if (fs.existsSync(stripped)) {
+      fs.renameSync(stripped, fPath);
+    }
+  }
+} catch (autoStripErr) {
+  console.warn(`[scrape_profile] auto-strip error: ${autoStripErr.message}`);
+}
+```
+
+</CodeGroup>
+
+## Logs & Debugging
+
+<CodeGroup>
+
+```bash View scrape logs
+pm2 logs media-worker --lines 100 | grep scrape_profile
+
+# Watch in real-time
+pm2 logs media-worker -f | grep scrape_profile
+```
+
+```bash Check Stagehand server
+pm2 logs stagehand-server --lines 50
+
+# Restart if crashed
+pm2 restart stagehand-server
+```
+
+</CodeGroup>
+
+### Common Issues
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `HITL_REQUIRED` | No cookies + no credentials | Install extension + log in |
+| `Stagehand timeout` | Page load >30s | Check internet connection |
+| `Login wall detected` | Cookies expired | Re-capture cookies via extension |
+| `screenshot failed` | Playwright crash | Restart `stagehand-server` |
+
+## Related
+
+- [Media Processing](/features/media-processing) — Media worker operations
+- [Dashboard](/features/dashboard) — Scrape trigger UI
+- [AI Agent](/features/ai-agent) — Stagehand MCP tools

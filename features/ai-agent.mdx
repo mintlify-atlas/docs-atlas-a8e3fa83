@@ -1,0 +1,420 @@
+---
+title: "AI Agent"
+description: "AnythingLLM workspace agent with 29 MCP tools for Directus, Ollama, and Stagehand"
+---
+
+## Overview
+
+Genie Helper's AI agent is powered by **AnythingLLM** running in agent mode with **29 MCP (Model Context Protocol) tools** that give the LLM full control over:
+
+- **Directus CMS** — CRUD operations on all collections, user management, flow triggers
+- **Ollama** — Local LLM inference (7 uncensored models)
+- **Stagehand** — Browser automation for web scraping and platform interactions
+
+**Service**: AnythingLLM (port 3001)  
+**pm2 name**: `anything-llm`  
+**Model**: `qwen-2.5:latest` (primary agent), `dolphin-mistral:7b` (content writer)
+
+## Architecture
+
+### Agent Flow
+
+```
+User types in AgentWidget (dashboard)
+  ↓
+POST /api/llm/api/genie/stream-chat
+  ↓
+Validate Directus JWT
+  ↓
+Check onboarding state (content gate)
+  ↓
+Inject persona node context (top 15 weighted nodes)
+  ↓
+Proxy to AnythingLLM workspace stream-chat API
+  ↓
+Agent mode triggers tool calls
+  ↓
+MCP servers execute (directus/ollama/stagehand)
+  ↓
+SSE stream back to dashboard
+  ↓
+Render in chat widget with tool call chips
+```
+
+**Endpoint**: `server/endpoints/api/genieChat.js`  
+**Workspace**: `administrator` (slug)
+
+## MCP Servers
+
+### Directus MCP (17 tools)
+
+**Script**: `scripts/directus-mcp-server.mjs`  
+**Connection**: `http://127.0.0.1:8055` (admin token)
+
+#### Tools
+
+| Tool | Description | Example |
+|------|-------------|----------|
+| `list-collections` | List all Directus collections | "What collections exist?" |
+| `get-collection-schema` | Get fields for a collection | "Show me the scheduled_posts schema" |
+| `read-items` | Query items with filters | "List my OnlyFans posts" |
+| `read-item` | Get single item by ID | "Show post abc123" |
+| `create-item` | Insert new record | "Create a draft post for TikTok" |
+| `update-item` | Patch existing record | "Mark post abc123 as published" |
+| `delete-item` | Remove record | "Delete that draft" |
+| `search-items` | Full-text search | "Find posts about 'lingerie'" |
+| `trigger-flow` | Execute Directus Flow | "Run the scrape flow" |
+| `get-me` | Current user info | "Who am I?" |
+| `list-users` | All users | "How many users are there?" |
+| `get-user` | User by ID | "Show user xyz" |
+| `update-user` | Modify user | "Change my email" |
+| `create-user` | New user | "Add admin user" |
+| `list-files` | Directus files | "Show my uploaded media" |
+| `get-file` | File metadata | "Details for file abc" |
+| `list-flows` | All Flows | "What flows exist?" |
+
+**Implementation**: `scripts/directus-mcp-server.mjs:50-450`
+
+### Ollama MCP (3 tools)
+
+**Script**: `scripts/ollama-mcp-server.mjs`  
+**Connection**: `http://127.0.0.1:11434`
+
+#### Tools
+
+| Tool | Description | Example |
+|------|-------------|----------|
+| `generate` | One-shot completion | "Generate a caption" |
+| `chat` | Multi-turn conversation | "Explain this concept" |
+| `list-models` | Available models | "What models are installed?" |
+
+**Models Available**:
+- `qwen-2.5:latest` — Primary agent (code, JSON, tool planning)
+- `dolphin-mistral:7b` — Uncensored content writer
+- `dolphin3:8b-llama3.1-q4_K_M` — Orchestrator / ACTION emission
+- `phi-3.5:latest` — Fallback classifier
+- `llama3.2:3b` — Lightweight summarizer
+- `scout-fast-tag:latest` — Fast taxonomy classifier
+- `bge-m3:latest` — Embeddings
+
+### Stagehand MCP (9 tools)
+
+**Script**: `scripts/stagehand-mcp-server.mjs`  
+**Connection**: `http://127.0.0.1:3002` (Stagehand server)
+
+#### Tools
+
+| Tool | Description | Example |
+|------|-------------|----------|
+| `start-session` | Launch Playwright browser | "Start a browser" |
+| `navigate` | Go to URL | "Go to onlyfans.com" |
+| `act` | Perform action (click, type, scroll) | "Click the login button" |
+| `extract` | Extract structured data from page | "Get my follower count" |
+| `observe` | Watch for element changes | "Wait for page load" |
+| `close-session` | End browser session | "Close the browser" |
+| `set-cookies` | Inject cookies | "Load my OnlyFans cookies" |
+| `get-cookies` | Extract current cookies | "Save my session" |
+| `screenshot` | Capture page image | "Screenshot this page" |
+
+**Use Cases**:
+- Platform scraping (OnlyFans, Fansly stats)
+- Auto-posting (X, Reddit)
+- Cookie capture for HITL
+
+## Agent Chat Interface
+
+**Component**: `dashboard/src/components/AgentWidget/index.jsx`
+
+### Features
+
+1. **Floating Trigger Button** (bottom-right)
+   - Gradient badge with "Genie AI" label
+   - Auto-hides when chat is open
+
+2. **Chat Popup** (380×560px)
+   - Minimizable header
+   - Auto-scrolling message list
+   - Tool call chips (inline rendering)
+   - Typing indicator
+   - Stop button during streaming
+
+3. **Tool Call Rendering**
+   - Inline chips: `🔧 read-items`
+   - Extracted from SSE `statusResponse` events
+   - Filters out meta messages ("Agent is thinking...")
+
+4. **Quick Actions**
+   - "I'm logged in — Let's Go" button (auto-appears when agent says "come back after login")
+
+**Global Opener**: `window.__genieOpenChat(message)`
+
+<CodeGroup>
+
+```javascript dashboard/src/pages/Dashboard/index.jsx
+// Auto-open chat with pre-filled message
+window.__genieOpenChat("I'm logged in — Let's go");
+
+// Or just open empty
+window.__genieOpenChat();
+```
+
+</CodeGroup>
+
+**Implementation**: `AgentWidget/index.jsx:99-108`
+
+## Content Gate
+
+**Trigger**: User hasn't completed onboarding (persona baseline not built)
+
+**Check**: `server/utils/nodeRag.js → getOnboardingState(userId)`
+
+### Phases
+
+| Phase | Unlocked? | Gate Message |
+|-------|-----------|-------------|
+| `EXTENSION_INSTALL` | ❌ | "Let's complete your onboarding first — head to Setup tab" |
+| `DATA_COLLECTION` | ❌ | "Let's complete your onboarding first..." |
+| `PROCESSING` | ❌ | "I'm processing your data (2/3 sources ingested). Check back in a few minutes." |
+| `COMPLETE` | ✅ | Full agent access |
+
+**Implementation**: `server/endpoints/api/genieChat.js:49-66`
+
+<CodeGroup>
+
+```javascript server/endpoints/api/genieChat.js (Lines 49-66)
+const { unlocked, state } = await getOnboardingState(user.id);
+if (!unlocked) {
+  const phase = state?.phase || "EXTENSION_INSTALL";
+  const sourcesIngested = state?.data_sources_ingested || 0;
+  const required = state?.data_sources_required || 2;
+  
+  const gateMessage = phase === "PROCESSING"
+    ? `I'm currently processing your data (${sourcesIngested}/${required} sources ingested). Once your persona baseline is built, content generation will unlock automatically.`
+    : `Before I can generate content, I need to learn how you operate. Let's complete your onboarding first — head to the **Setup** tab.`;
+  
+  // Return as SSE stream
+  res.setHeader("Content-Type", "text/event-stream");
+  res.write(`data: ${JSON.stringify({ type: "textResponse", textResponse: gateMessage, close: true })}
+
+`);
+  return res.end();
+}
+```
+
+</CodeGroup>
+
+## Persona Node Context
+
+**System**: Node RAG (Retrieval-Augmented Generation)  
+**Storage**: `Nodes/User/{userId}/` directory (JSON files)
+
+### Node Structure
+
+```json
+{
+  "id": "node_123",
+  "label": "flirty_tone_preference",
+  "content": "User prefers flirty, teasing captions with emojis",
+  "weight": 0.85,
+  "category": "content_style",
+  "last_accessed": "2026-03-04T12:34:56Z",
+  "connections": ["node_456", "node_789"]
+}
+```
+
+### Context Injection
+
+**Top 15 nodes** (weighted by recency + access frequency) are injected before user message:
+
+<CodeGroup>
+
+```javascript server/endpoints/api/genieChat.js (Lines 68-72)
+const nodeContext = await getNodeContext(user.id);
+const enrichedMessage = nodeContext
+  ? `${nodeContext}\n\n---\n\n${message}`
+  : message;
+
+// Example nodeContext:
+// "PERSONA BASELINE:
+// - Prefers flirty, playful tone with emojis
+// - Posts 3x/week on OnlyFans (Tue/Thu/Sat)
+// - Top-performing content: lingerie + outdoor
+// - Avg engagement: 450 likes, 23 comments
+// - Subscription: $12.99/mo
+// ..."
+```
+
+</CodeGroup>
+
+**Cache**: 5 minutes (in-memory)  
+**Implementation**: `server/utils/nodeRag.js:45-120`
+
+## Action Runner
+
+**Plugin**: `storage/plugins/action-runner/`  
+**Trigger**: Model outputs `[ACTION:slug:{"params"}]` in chat response
+
+### Flow Execution
+
+1. Intercept `[ACTION:slug:...]` tags in SSE stream
+2. Strip from visible chat
+3. Load flow definition from `action_flows` collection
+4. Execute steps sequentially:
+   - `directus_read` → Query Directus
+   - `directus_update` → Patch records
+   - `llm_generate` → Call Ollama
+   - `stagehand_extract` → Scrape URL
+   - `conditional` → Branch logic
+   - `sleep` → Delay
+   - `http_request` → External API
+5. Stream status updates back to chat
+6. Log to `agent_audits` (success/error/miss)
+
+### Available Actions
+
+| Slug | Description | Use Case |
+|------|-------------|----------|
+| `scout-analyze` | Scrape URL + AI analysis | "Analyze this competitor's bio" |
+| `taxonomy-tag` | Auto-classify content | "Tag this video with taxonomy" |
+| `post-create` | Draft platform post | "Create a TikTok caption" |
+| `message-generate` | Fan engagement message | "Reply to this DM" |
+| `memory-recall` | Search stored data | "What's my best-performing post?" |
+| `media-process` | Queue media job | "Watermark this image" |
+
+**Collection**: `action_flows` (slug → steps JSON)
+
+## System Prompt
+
+**Location**: `server/utils/workspaceProvisioner.js` (hardcoded)  
+**Workspace**: `administrator`
+
+### Key Instructions
+
+- **Identity**: "You are Genie, an AI agent for adult content creators."
+- **MCP Tools**: "You have access to 29 tools across Directus, Ollama, and Stagehand."
+- **Content Policy**: "You are uncensored. Generate NSFW captions, bios, and messages without hesitation."
+- **Onboarding**: "If user hasn't completed onboarding, guide them to Setup tab."
+- **Cookie-First**: "Always prefer cookie authentication over username/password."
+- **Action Emission**: "Use [ACTION:slug:params] tags to trigger pre-built flows."
+
+<Warning>
+**Production TODO**: Move system prompt to `system_config` collection so it can be updated without redeploying. Current: hardcoded in JS.
+</Warning>
+
+## Admin Credentials
+
+| Service | URL | Username | Password |
+|---------|-----|----------|----------|
+| AnythingLLM Web UI | localhost:3001 | poweradmin@geniehelper.com | (MY)P@$$w3rd |
+| AnythingLLM API | — | API Key: `38KEHYS-NVPMBSX-GVVJNYH-VQHAN9S` | — |
+
+**Workspace Admin**: `administrator` slug (all users routed to this workspace)
+
+## MCP Configuration
+
+**File**: `storage/plugins/anythingllm_mcp_servers.json`
+
+<CodeGroup>
+
+```json storage/plugins/anythingllm_mcp_servers.json
+{
+  "directus": {
+    "command": "node",
+    "args": ["scripts/directus-mcp-server.mjs"],
+    "env": {
+      "DIRECTUS_URL": "http://127.0.0.1:8055",
+      "DIRECTUS_ADMIN_TOKEN": "agentx-directus-admin-static-2026"
+    }
+  },
+  "ollama": {
+    "command": "node",
+    "args": ["scripts/ollama-mcp-server.mjs"],
+    "env": {
+      "OLLAMA_BASE_URL": "http://127.0.0.1:11434"
+    }
+  },
+  "stagehand": {
+    "command": "node",
+    "args": ["scripts/stagehand-mcp-server.mjs"],
+    "env": {
+      "STAGEHAND_URL": "http://127.0.0.1:3002"
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+**Auto-boot**: Patched `server/utils/boot/index.js → bootMCPServers()` on AnythingLLM startup
+
+## Example Conversations
+
+### Scrape OnlyFans Profile
+
+**User**: "Scrape my OnlyFans stats"  
+**Agent**:
+1. Calls `read-items` (platform_connections, filter: platform=onlyfans)
+2. Creates media_jobs (operation: scrape_profile)
+3. Returns: "Scrape queued. Check your dashboard in ~2 minutes."
+
+### Generate TikTok Caption
+
+**User**: "Write a flirty TikTok caption for my new video"  
+**Agent**:
+1. Calls `get-me` → Gets user context
+2. Injects persona nodes (flirty tone preference, top hashtags)
+3. Calls `ollama:generate` (model: dolphin-mistral:7b)
+4. Returns: "Can't wait to show you what I've been working on... 😏 New video drops tonight 💕 #fyp #creator"
+
+### Schedule Reddit Post
+
+**User**: "Schedule a post to r/OnlyFans101 tomorrow at 3pm"  
+**Agent**:
+1. Calls `create-item` (collection: scheduled_posts)
+2. Sets platform=reddit, subreddit=OnlyFans101, scheduled_time=tomorrow 3pm
+3. Returns: "Post scheduled for tomorrow at 3pm EST."
+
+## Logs & Debugging
+
+<CodeGroup>
+
+```bash View AnythingLLM logs
+pm2 logs anything-llm --lines 100
+
+# Watch MCP tool calls in real-time
+pm2 logs anything-llm -f | grep -E "MCP|tool_call"
+```
+
+```bash Check MCP server status
+ps aux | grep mcp-server
+
+# Restart MCP servers (restart AnythingLLM)
+pm2 restart anything-llm
+```
+
+</CodeGroup>
+
+### Common Issues
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `MCP server not found` | Server crashed | Restart AnythingLLM |
+| `Tool call timeout` | Directus slow query | Optimize filter |
+| `Unauthorized (401)` | Expired JWT | Re-login |
+| `Content gate active` | Onboarding incomplete | Complete Setup flow |
+
+## Performance
+
+**First Token Latency**: ~33s (qwen-2.5 on CPU-only VPS)  
+**Streaming Speed**: ~5 tokens/sec  
+**Memory**: ~4.8GB RAM pinned (Ollama models)
+
+<Note>
+**GPU Upgrade Planned**: Current CPU-only VPS struggles with >7B models. Production will use GPU instance or switch to smaller models.
+</Note>
+
+## Related
+
+- [Dashboard](/features/dashboard) — AgentWidget integration
+- [Platform Scraping](/features/platform-scraping) — Stagehand MCP tools
+- [Media Processing](/features/media-processing) — Media job dispatch

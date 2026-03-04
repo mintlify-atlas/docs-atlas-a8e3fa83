@@ -1,0 +1,504 @@
+---
+title: Architecture
+description: System architecture, service layout, and data flow in Genie Helper
+---
+
+# System Architecture
+
+Genie Helper is a multi-service platform that combines AnythingLLM, Directus CMS, Ollama, and Stagehand browser automation into a unified AI operations platform for content creators.
+
+## Architecture Overview
+
+```
+Browser → geniehelper.com (React SPA)
+  → /app/*          authenticated creator dashboard
+  → /api/directus/  Directus REST (port 8055) — data layer
+  → /api/llm/       AnythingLLM (port 3001)   — chat + agent + embed widget
+
+AnythingLLM Agent
+  → directus MCP   (17 tools): CRUD collections, trigger flows, manage users/files
+  → ollama MCP     (3 tools):  generate, chat, list-models
+  → stagehand MCP  (9 tools):  browser sessions, navigate, act, extract, cookies, screenshot
+  → Action Runner: [ACTION:slug:{"params"}] tag interceptor → pre-built flows
+
+Media Worker (BullMQ)
+  → scrape_profile  — Stagehand OF login + data extraction
+  → publish_post    — Stagehand-based cross-platform posting
+  → apply_watermark — ImageMagick watermarking
+  → create_teaser   — FFmpeg video preview generation
+  → post_scheduler  — polls scheduled_posts every 60s
+```
+
+## Service Layout
+
+<CardGroup cols={2}>
+  <Card title="AnythingLLM" icon="robot">
+    **Port:** 3001  
+    **PM2 Name:** `anything-llm`  
+    **Role:** Chat API, AI agent, embed widget  
+    **Files:** `server/`, `storage/`
+  </Card>
+  
+  <Card title="Directus CMS" icon="database">
+    **Port:** 8055  
+    **PM2 Name:** `agentx-cms`  
+    **Role:** Collections, auth, REST API  
+    **Files:** `cms/`
+  </Card>
+  
+  <Card title="Stagehand" icon="browser">
+    **Port:** 3002  
+    **PM2 Name:** `stagehand-server`  
+    **Role:** Browser automation  
+    **Files:** `scripts/stagehand-mcp-server.mjs`
+  </Card>
+  
+  <Card title="Dashboard" icon="grid">
+    **Port:** 3100  
+    **PM2 Name:** `genie-dashboard`  
+    **Role:** React SPA (serve dashboard/dist/)  
+    **Files:** `dashboard/`
+  </Card>
+  
+  <Card title="Media Worker" icon="gears">
+    **Port:** —  
+    **PM2 Name:** `media-worker`  
+    **Role:** BullMQ consumer (Redis)  
+    **Files:** `media-worker/`
+  </Card>
+  
+  <Card title="Collector" icon="file-import">
+    **Port:** —  
+    **PM2 Name:** `anything-collector`  
+    **Role:** Document ingestion  
+    **Files:** AnythingLLM collector scripts
+  </Card>
+  
+  <Card title="Ollama" icon="brain">
+    **Port:** 11434  
+    **PM2 Name:** (system)  
+    **Role:** Local LLM inference  
+    **Files:** System service
+  </Card>
+</CardGroup>
+
+## MCP Servers (29 Tools Total)
+
+Genie Helper uses the Model Context Protocol to give the AI agent access to three core systems:
+
+### Directus MCP (17 Tools)
+
+**Script:** `scripts/directus-mcp-server.mjs`
+
+<Accordion title="View All Directus Tools">
+- `list-collections` — List all available collections
+- `get-collection-schema` — Get schema for a specific collection
+- `read-items` — Read multiple items from a collection
+- `read-item` — Read a single item by ID
+- `create-item` — Create a new item in a collection
+- `update-item` — Update an existing item
+- `delete-item` — Delete an item
+- `search-items` — Search items with filters
+- `trigger-flow` — Trigger a Directus Flow
+- `get-me` — Get current user info
+- `list-users` — List all users
+- `get-user` — Get a specific user
+- `update-user` — Update user details
+- `create-user` — Create a new user
+- `list-files` — List uploaded files
+- `get-file` — Get file details
+- `list-flows` — List all automation flows
+</Accordion>
+
+### Ollama MCP (3 Tools)
+
+**Script:** `scripts/ollama-mcp-server.mjs`
+
+- `generate` — Generate text completions
+- `chat` — Interactive chat with model
+- `list-models` — List available local models
+
+### Stagehand MCP (9 Tools)
+
+**Script:** `scripts/stagehand-mcp-server.mjs`
+
+<Accordion title="View All Stagehand Tools">
+- `start-session` — Initialize browser session
+- `navigate` — Navigate to URL
+- `act` — Perform browser action (click, type, etc.)
+- `extract` — Extract data from page
+- `observe` — Observe page state
+- `close-session` — Close browser session
+- `set-cookies` — Set browser cookies
+- `get-cookies` — Get browser cookies
+- `screenshot` — Capture screenshot
+</Accordion>
+
+### MCP Configuration
+
+**Config File:** `storage/plugins/anythingllm_mcp_servers.json`  
+**Auto-boot:** Patched `server/utils/boot/index.js` → `bootMCPServers()` on startup
+
+## Data Layer (Directus Collections)
+
+Genie Helper uses Directus as its primary data store with 11+ key collections:
+
+| Collection | Purpose | Key Fields |
+|-----------|---------|------------|
+| `creator_profiles` | Platform accounts, encrypted credentials, scrape status | `platform`, `username`, `credentials` (encrypted) |
+| `scraped_media` | Content with engagement metrics | `url`, `views`, `likes`, `revenue` |
+| `scheduled_posts` | Post queue (worker polls every 60s) | `scheduled_at`, `platforms`, `status` |
+| `media_jobs` | BullMQ job records | `job_type`, `status`, `result` |
+| `hitl_sessions` | Human-in-the-loop login requests | `platform`, `status`, `completed_at` |
+| `platform_sessions` | Encrypted browser cookies from extension | `platform`, `cookies` (encrypted) |
+| `taxonomy_dimensions` | 6 super-concept content classification | `dimension_name`, `weight` |
+| `taxonomy_mapping` | 3,208 classified tags across 6 concepts | `tag`, `dimension`, `confidence` |
+| `fan_profiles` | Fan engagement data | `username`, `ltv`, `last_interaction` |
+| `action_flows` | Action Runner flow definitions | `slug`, `steps` (JSON) |
+| `agent_audits` | Every ACTION execution logged | `action_slug`, `success`, `error` |
+
+<Note>
+All platform credentials are encrypted with **AES-256-GCM** using `server/utils/credentialsCrypto.js` before storage.
+</Note>
+
+## Action Runner System
+
+The Action Runner is a middleware layer that intercepts special tags from the AI model's output:
+
+### How It Works
+
+<Steps>
+  <Step title="Model Emits Action Tag">
+    The AI model outputs: `[ACTION:taxonomy-tag:{"media_id":123}]` in its prose
+  </Step>
+  <Step title="Action Runner Intercepts">
+    The action-runner plugin detects the tag and strips it from visible chat
+  </Step>
+  <Step title="Flow Execution">
+    Looks up `taxonomy-tag` in `action_flows` collection and executes the steps JSON
+  </Step>
+  <Step title="Status Streaming">
+    Streams execution status back to the chat interface in real-time
+  </Step>
+  <Step title="Audit Logging">
+    Records execution to `agent_audits` (success/error/miss)
+  </Step>
+</Steps>
+
+### Available Actions
+
+<CodeGroup>
+```json Action Flow Example
+{
+  "slug": "taxonomy-tag",
+  "steps": [
+    {
+      "type": "mcp_call",
+      "server": "directus",
+      "tool": "read-item",
+      "params": {"collection": "scraped_media", "id": "{{media_id}}"}
+    },
+    {
+      "type": "mcp_call",
+      "server": "ollama",
+      "tool": "generate",
+      "params": {"model": "scout-fast-tag", "prompt": "Classify: {{item.title}}"}
+    },
+    {
+      "type": "mcp_call",
+      "server": "directus",
+      "tool": "update-item",
+      "params": {"collection": "scraped_media", "id": "{{media_id}}", "data": {"tags": "{{classification}}"}}
+    }
+  ]
+}
+```
+</CodeGroup>
+
+| Action Slug | Purpose | MCP Tools Used |
+|------------|---------|----------------|
+| `scout-analyze` | Scrape URL + AI analysis | `stagehand:navigate`, `stagehand:extract`, `ollama:generate` |
+| `taxonomy-tag` | Auto-classify content with taxonomy | `directus:read-item`, `ollama:generate`, `directus:update-item` |
+| `post-create` | Draft platform-specific post | `directus:read-items`, `ollama:chat`, `directus:create-item` |
+| `message-generate` | Fan engagement message | `directus:read-item`, `ollama:generate` |
+| `memory-recall` | Search stored data + summarize | `directus:search-items`, `ollama:generate` |
+| `media-process` | Queue media job | `directus:create-item` (media_jobs) |
+
+## Media Worker (BullMQ)
+
+The Media Worker is a BullMQ consumer that processes asynchronous jobs:
+
+**Queues:**
+- `scrape-jobs` — Profile scraping
+- `media-jobs` — Media processing
+- `onboarding-jobs` — User onboarding workflows
+
+**Job Types:**
+
+<CardGroup cols={2}>
+  <Card title="scrape_profile" icon="download">
+    Uses Stagehand to log into OnlyFans, extract stats and content, store in `scraped_media`
+  </Card>
+  <Card title="publish_post" icon="paper-plane">
+    Cross-platform posting via Stagehand browser automation
+  </Card>
+  <Card title="apply_watermark" icon="image">
+    ImageMagick-based image watermarking (100ms per operation)
+  </Card>
+  <Card title="create_teaser" icon="video">
+    FFmpeg video preview generation (~30s CPU per clip)
+  </Card>
+  <Card title="post_scheduler" icon="clock">
+    Polls `scheduled_posts` every 60s and publishes ready posts
+  </Card>
+</CardGroup>
+
+**Worker File:** `media-worker/index.js`  
+**Redis Backend:** Required for BullMQ job queue
+
+## Dashboard (React SPA)
+
+**Path:** `dashboard/`  
+**Stack:** React 18 + Vite + Tailwind CSS + React Router v6  
+**Doc Root:** `dashboard/dist/` served at `geniehelper.com/`
+
+### Routes
+
+**Public Routes:**
+- `/` — Home
+- `/pricing` — Pricing plans
+- `/about` — About page
+- `/register` — Registration (invite-gated)
+- `/login` — Login
+
+**Authenticated Routes (`/app/*`):**
+- `/app/dashboard` — Main dashboard
+- `/app/media` — Media library
+- `/app/calendar` — Post calendar
+- `/app/fans` — Fan management
+- `/app/analytics` — Performance analytics
+- `/app/platforms` — Platform connections
+- `/app/settings` — User settings
+
+**Admin Routes:**
+- `/admin` — Directus + AnythingLLM iframes
+- `/view-as` — User impersonation
+
+### AI Chat Widget
+
+AnythingLLM embed widget injected bottom-right on all `/app/*` routes:
+
+- **Embed ID:** `cf54a9c0-224c-469d-b97b-5dc8095eac82` (Administrator workspace)
+- **Greeting:** Set via `data-greeting` attribute on script tag
+- **Component:** `dashboard/src/components/AgentWidget/index.jsx`
+- **Trigger:** `window.__genieOpenChat()`
+
+### API Proxies
+
+**Nginx Configuration:**
+- `/api/directus/` → `http://localhost:8055`
+- `/api/llm/` → `http://localhost:3001`
+
+**Authentication:**
+- Directus JWT (auto-refresh)
+- sessionStorage for impersonation tabs
+
+**Registration:**
+- Invite-gated — Alpha invite code validated against AnythingLLM invite API
+
+## Data Flow Examples
+
+### Profile Scraping Flow
+
+<Steps>
+  <Step title="User Clicks 'Scrape Profile'">
+    Dashboard sends POST to `/api/queue/scrape-profile` with `creator_profile_id`
+  </Step>
+  <Step title="Job Enqueued">
+    BullMQ job created in `scrape-jobs` queue, record added to `media_jobs`
+  </Step>
+  <Step title="Media Worker Picks Up Job">
+    Worker checks `platform_sessions` for encrypted cookies
+  </Step>
+  <Step title="Stagehand Session Started">
+    If cookies exist: `set-cookies` + `navigate` to platform  
+    If cookies missing: Create `hitl_sessions` record (yellow dashboard banner)
+  </Step>
+  <Step title="Data Extraction">
+    Stagehand `extract` tool scrapes stats, content URLs, engagement metrics
+  </Step>
+  <Step title="Data Storage">
+    Items created in `scraped_media` collection via Directus API
+  </Step>
+  <Step title="Job Completion">
+    `media_jobs` record updated with status and result count
+  </Step>
+</Steps>
+
+### Content Classification Flow
+
+<Steps>
+  <Step title="User Asks 'Tag this content'">
+    Chat message sent to AnythingLLM agent
+  </Step>
+  <Step title="Agent Emits Action">
+    Model outputs: `[ACTION:taxonomy-tag:{"media_id":123}]`
+  </Step>
+  <Step title="Action Runner Intercepts">
+    Looks up `taxonomy-tag` flow in `action_flows` collection
+  </Step>
+  <Step title="Step 1: Read Media">
+    MCP call: `directus:read-item` from `scraped_media`
+  </Step>
+  <Step title="Step 2: AI Classification">
+    MCP call: `ollama:generate` with `scout-fast-tag` model
+  </Step>
+  <Step title="Step 3: Update Tags">
+    MCP call: `directus:update-item` with classified tags
+  </Step>
+  <Step title="Audit Log">
+    Execution recorded in `agent_audits` collection
+  </Step>
+</Steps>
+
+## Security Architecture
+
+### Credential Encryption
+
+**File:** `server/utils/credentialsCrypto.js`
+
+<CodeGroup>
+```javascript Encryption Format
+// Encrypted credentials stored as:
+{
+  "enc": "v1:iv:tag:ciphertext"
+}
+
+// Functions:
+encryptJSON(plainObject) → { enc: "v1:..." }
+decryptJSON(encObject) → plainObject
+```
+
+```bash Environment Variables
+CREDENTIALS_ENC_KEY_B64=<base64 of 32 bytes>
+DIRECTUS_ADMIN_TOKEN=<admin-token>
+RBAC_SYNC_WEBHOOK_SECRET=<webhook-secret>
+```
+</CodeGroup>
+
+**Key Points:**
+- AES-256-GCM encryption
+- No encryption keys in browser — all crypto is server-side only
+- Handles both new object format and legacy raw strings
+
+### Authentication Flow
+
+1. User logs in via `/login` (React form)
+2. Credentials sent to `/api/directus/auth/login`
+3. Directus returns JWT access token + refresh token
+4. Dashboard stores tokens in localStorage
+5. All API requests include `Authorization: Bearer <token>`
+6. Auto-refresh when access token expires
+
+### RBAC Synchronization
+
+User roles are synced between Directus and AnythingLLM:
+
+**Endpoint:** `server/endpoints/api/rbacSync.js`  
+**Webhook:** Directus fires webhook on user create/update  
+**Secret:** `RBAC_SYNC_WEBHOOK_SECRET` validates webhook authenticity
+
+## Nginx Reverse Proxy
+
+<Warning>
+**Plesk Users:** All nginx changes via Plesk UI only. Never add `location /` — Plesk generates its own, duplicate causes startup failure.
+</Warning>
+
+**Current proxy layout** (full config in `docs/nginx/geniehelper.com.vhost_nginx.conf`):
+
+```nginx
+# SPA fallback for React Router
+error_page 404 =200 /index.html;
+
+location /api/directus/ {
+    proxy_pass http://127.0.0.1:8055/;
+    proxy_set_header Host $host;
+}
+
+location /api/llm/ {
+    proxy_pass http://127.0.0.1:3001/;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade "upgrade";
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_read_timeout 86400;
+}
+```
+
+**Critical rules:**
+- Sub-path locations (`/app/`, `/api/llm/`) and exact-match (`= /path`) are safe
+- SPA routing: `error_page 404 =200 /index.html;`
+- WebSocket: use `"upgrade"` literal for `Connection` header
+
+## Project Structure
+
+```
+agentx/
+├── scripts/          MCP servers + CLI utilities
+├── server/           AnythingLLM backend (Express + Prisma)
+│   ├── endpoints/api/
+│   │   ├── captions.js          POST /api/captions/generate
+│   │   ├── credentials.js       AES-256-GCM credential endpoints
+│   │   ├── impersonate.js       Admin impersonation
+│   │   ├── queue.js             BullMQ job management
+│   │   ├── rbacSync.js          Directus ↔ AnythingLLM user sync
+│   │   └── register.js          Invite-gated registration proxy
+│   └── utils/
+│       ├── actionRunner/        Action flow executor
+│       ├── credentialsCrypto.js AES-256-GCM encryption
+│       └── boot/                MCP server auto-boot
+├── dashboard/        React SPA (Vite + Tailwind + React Router v6)
+│   └── src/
+│       ├── pages/               Route pages
+│       ├── components/Layout/   AppLayout (embed widget), Sidebar, PublicLayout
+│       └── utils/api.js         Directus + LLM API client
+├── media-worker/     BullMQ media processing worker
+├── cms/              Directus extensions
+├── storage/          AnythingLLM persistent storage + MCP config
+├── docs/nginx/       Nginx vhost configs (Plesk reference)
+└── .claude/sessions/ Development session logs
+```
+
+## Performance Considerations
+
+**Server Specs:** $100/mo IONOS dedicated VPS, self-hosted
+
+<Note>
+**Resource Usage:**
+- **LLM inference:** CPU-bound Qwen2.5 7B ~2-5s/call, ~4.8GB RAM pinned
+- **Stagehand sessions:** ~300MB RAM/active browser → ~33 concurrent sessions hard ceiling (10GB available)
+- **FFmpeg clip generation:** ~30s CPU per clip (real bottleneck)
+- **Sharp/ImageMagick watermark:** ~100ms (effectively zero cost → unlimited justified)
+</Note>
+
+**Scaling Limits:**
+- Current Plesk VPS is **CPU-only**
+- `dolphin3:8b` and any >7B model will stall on CPU
+- Production upgrade: GPU VPS or stick with `qwen-2.5:latest`
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Install and configure Genie Helper on your server
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the Directus and AnythingLLM API endpoints
+  </Card>
+  <Card title="MCP Servers" icon="plug" href="/ai/mcp-servers">
+    Learn how to extend MCP servers with custom tools
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment/installation">
+    Production deployment best practices
+  </Card>
+</CardGroup>

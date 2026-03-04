@@ -1,0 +1,458 @@
+---
+title: Directus MCP Tools
+description: Complete reference for all 17 Directus MCP server tools
+---
+
+The Directus MCP server provides 17 tools for interacting with your Directus CMS instance. These tools handle collections, items CRUD operations, users, files, and flows.
+
+**Server name:** `directus`
+**Version:** 1.1.0
+**Script:** `scripts/directus-mcp-server.mjs`
+
+## Environment Variables
+
+```bash
+DIRECTUS_URL=http://127.0.0.1:8055
+DIRECTUS_EMAIL=admin@geniehelper.com
+DIRECTUS_PASSWORD=password
+```
+
+---
+
+## Collections
+
+### list-collections
+
+List all custom Directus collections (excludes system tables starting with `directus_`).
+
+**Parameters:** None
+
+**Returns:** Array of collection objects with `name` and `note` fields.
+
+**Example:**
+```json
+[
+  {
+    "name": "creator_profiles",
+    "note": "Platform accounts and credentials"
+  },
+  {
+    "name": "scraped_media",
+    "note": "Content with engagement metrics"
+  }
+]
+```
+
+---
+
+### get-collection-schema
+
+Get field schema for a Directus collection.
+
+**Parameters:**
+- `collection` (string, required): Collection name
+
+**Returns:** Array of field objects with `field`, `type`, `note`, and `required` properties.
+
+**Example:**
+```json
+{
+  "collection": "creator_profiles"
+}
+```
+
+**Response:**
+```json
+[
+  {
+    "field": "id",
+    "type": "uuid",
+    "note": "Primary key",
+    "required": true
+  },
+  {
+    "field": "platform",
+    "type": "string",
+    "note": "Platform name (onlyfans, fansly, etc.)",
+    "required": true
+  }
+]
+```
+
+---
+
+## Items CRUD
+
+### read-items
+
+Read items from a Directus collection with optional filtering, sorting, and pagination.
+
+**Parameters:**
+- `collection` (string, required): Collection name
+- `filter` (object, optional): Filter object (e.g. `{"status":{"_eq":"active"}}`)
+- `fields` (string, optional): Comma-separated field names
+- `limit` (number, optional): Max items (default 100)
+- `offset` (number, optional): Items to skip
+- `sort` (string, optional): Sort field (-field for desc)
+
+**Example:**
+```json
+{
+  "collection": "scraped_media",
+  "filter": {"platform": {"_eq": "onlyfans"}},
+  "fields": "id,title,likes_count,created_at",
+  "limit": 10,
+  "sort": "-created_at"
+}
+```
+
+---
+
+### read-item
+
+Read a single item by ID from a Directus collection.
+
+**Parameters:**
+- `collection` (string, required): Collection name
+- `id` (string, required): Item ID (UUID)
+- `fields` (string, optional): Comma-separated field names
+
+**Example:**
+```json
+{
+  "collection": "creator_profiles",
+  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "fields": "id,platform,username,status"
+}
+```
+
+---
+
+### create-item
+
+Create a new item in a Directus collection.
+
+**Parameters:**
+- `collection` (string, required): Collection name
+- `item` (object, required): Item data as a JSON object
+
+**Special behavior for media_jobs:**
+- Includes tier-based rate limiting and quota checks
+- Validates user subscription tier and feature access
+- Checks usage limits for the current billing cycle
+- Throws `tier_limit` errors if quota exceeded
+
+**Example:**
+```json
+{
+  "collection": "scheduled_posts",
+  "item": {
+    "user_id": "user-uuid",
+    "platform": "onlyfans",
+    "content": "Post text here",
+    "scheduled_for": "2026-03-05T10:00:00Z",
+    "status": "pending"
+  }
+}
+```
+
+---
+
+### update-item
+
+Update an existing item in a Directus collection.
+
+**Parameters:**
+- `collection` (string, required): Collection name
+- `id` (string, required): Item ID (UUID)
+- `item` (object, required): Fields to update as a JSON object
+
+**Example:**
+```json
+{
+  "collection": "scheduled_posts",
+  "id": "post-uuid",
+  "item": {
+    "status": "published",
+    "published_at": "2026-03-05T10:05:00Z"
+  }
+}
+```
+
+---
+
+### delete-item
+
+Delete an item from a Directus collection.
+
+**Parameters:**
+- `collection` (string, required): Collection name
+- `id` (string, required): Item ID (UUID)
+
+**Returns:** Success status with collection and id confirmation.
+
+**Example:**
+```json
+{
+  "collection": "scheduled_posts",
+  "id": "post-uuid"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "collection": "scheduled_posts",
+  "id": "post-uuid"
+}
+```
+
+---
+
+### search-items
+
+Full-text search across items in a collection.
+
+**Parameters:**
+- `collection` (string, required): Collection name
+- `query` (string, required): Search query
+- `fields` (string, optional): Fields to return
+- `limit` (number, optional): Max results
+
+**Example:**
+```json
+{
+  "collection": "scraped_media",
+  "query": "beach sunset",
+  "fields": "id,title,description",
+  "limit": 20
+}
+```
+
+---
+
+## Users
+
+### get-me
+
+Get the current authenticated Directus user (admin) with full profile fields.
+
+**Parameters:**
+- `fields` (string, optional): Comma-separated fields (default: `*,role.name`)
+
+**Example:**
+```json
+{
+  "fields": "id,email,display_name,role.name,subscription_tier"
+}
+```
+
+---
+
+### list-users
+
+List Directus users with optional filtering (admin operation).
+
+**Parameters:**
+- `filter` (object, optional): Filter object (e.g. `{"role":{"name":{"_eq":"Creator"}}}`)
+- `fields` (string, optional): Comma-separated fields (default: `id,email,display_name,role.name,status,primary_platform,subscription_tier`)
+- `limit` (number, optional): Max results (default 50)
+- `offset` (number, optional): Items to skip
+
+**Example:**
+```json
+{
+  "filter": {"subscription_tier": {"_eq": "pro"}},
+  "limit": 25
+}
+```
+
+---
+
+### get-user
+
+Get a single Directus user by ID.
+
+**Parameters:**
+- `id` (string, required): User UUID
+- `fields` (string, optional): Comma-separated fields (default: `*,role.name`)
+
+**Example:**
+```json
+{
+  "id": "user-uuid",
+  "fields": "id,email,subscription_tier,usage_reset_at"
+}
+```
+
+---
+
+### update-user
+
+Update a Directus user by ID (admin operation). Use `update-me` for self-updates.
+
+**Parameters:**
+- `id` (string, required): User UUID
+- `data` (object, required): Fields to update as a JSON object
+
+**Example:**
+```json
+{
+  "id": "user-uuid",
+  "data": {
+    "subscription_tier": "pro",
+    "subscription_start": "2026-03-01T00:00:00Z"
+  }
+}
+```
+
+---
+
+### create-user
+
+Create a new Directus user (admin operation).
+
+**Parameters:**
+- `data` (object, required): User fields as a JSON object — minimum: `email`, `password`, `role` (UUID)
+
+**Example:**
+```json
+{
+  "data": {
+    "email": "newcreator@example.com",
+    "password": "SecurePassword123!",
+    "role": "role-uuid",
+    "display_name": "New Creator",
+    "subscription_tier": "starter"
+  }
+}
+```
+
+---
+
+## Files
+
+### list-files
+
+List files stored in Directus with optional filtering.
+
+**Parameters:**
+- `filter` (object, optional): Filter object (e.g. `{"folder":{"_eq":"uuid"}}`)
+- `fields` (string, optional): Fields to return (default: `id,filename_download,title,type,filesize,uploaded_on,folder`)
+- `limit` (number, optional): Max results (default 50)
+- `offset` (number, optional): Items to skip
+
+**Example:**
+```json
+{
+  "filter": {"type": {"_starts_with": "image/"}},
+  "limit": 100
+}
+```
+
+---
+
+### get-file
+
+Get metadata for a single file by ID. Returns download URL and metadata.
+
+**Parameters:**
+- `id` (string, required): File UUID
+
+**Returns:** File metadata plus `asset_url` field for downloading.
+
+**Example:**
+```json
+{
+  "id": "file-uuid"
+}
+```
+
+**Response:**
+```json
+{
+  "id": "file-uuid",
+  "filename_download": "image.jpg",
+  "type": "image/jpeg",
+  "filesize": 245678,
+  "asset_url": "http://127.0.0.1:8055/assets/file-uuid"
+}
+```
+
+---
+
+## Flows
+
+### list-flows
+
+List all Directus Flows available for triggering. Returns id, name, status, trigger.
+
+**Parameters:** None
+
+**Returns:** Array of flow objects.
+
+**Example Response:**
+```json
+[
+  {
+    "id": "591a8845-...",
+    "name": "genie-memory-sync",
+    "status": "active",
+    "trigger": "manual",
+    "description": "Sync user memory to RAG"
+  },
+  {
+    "id": "7506f825-...",
+    "name": "genie-taxonomy-tag",
+    "status": "active",
+    "trigger": "manual",
+    "description": "Auto-classify content"
+  }
+]
+```
+
+---
+
+### trigger-flow
+
+Trigger a Directus Flow by UUID. Use `list-flows` to discover available flows.
+
+**Known flows:**
+- `591a8845` - genie-memory-sync
+- `7506f825` - genie-taxonomy-tag
+- `50a4dc14` - genie-post-create
+- `a4f083fa` - genie-message-generate
+
+**Parameters:**
+- `flow_uuid` (string, required): Flow UUID
+- `payload` (object, optional): Optional JSON payload object
+
+**Example:**
+```json
+{
+  "flow_uuid": "7506f825-...",
+  "payload": {
+    "media_id": "media-uuid",
+    "user_id": "user-uuid"
+  }
+}
+```
+
+---
+
+## Rate Limiting & Quotas
+
+The `create-item` tool includes tier-based rate limiting when creating `media_jobs` items:
+
+1. **Feature Access Check**: Validates if the operation is available on the user's subscription tier
+2. **Quota Check**: Counts usage in the current billing cycle and enforces limits
+3. **Error Handling**: Throws descriptive `tier_limit:` errors when limits are exceeded
+
+These checks use the `rateLimiter.js` utility and query the `user_usage_counts` collection.
+
+**Tier limits example:**
+- Starter: 3 AI-assisted posts, 0 clip operations
+- Creator: 30 AI-assisted posts, 10 clip operations
+- Pro: 150 AI-assisted posts, 50 clip operations
+- Studio: Unlimited operations

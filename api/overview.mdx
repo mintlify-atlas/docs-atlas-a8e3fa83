@@ -1,0 +1,144 @@
+---
+title: 'API Overview'
+description: 'Genie Helper REST API for registration, credentials, queue management, captions, and AI chat'
+---
+
+## Introduction
+
+The Genie Helper API provides programmatic access to core platform features including:
+
+- User registration and authentication
+- Encrypted credential storage (platform connections, download credentials, sessions)
+- Media job queue management
+- AI-powered caption generation
+- Genie AI agent chat interface
+
+All endpoints are designed for server-to-server integration and mobile/web clients authenticated via Directus JWT.
+
+## Base URLs
+
+**AnythingLLM Server (API endpoints)**
+```
+http://localhost:3001/api
+```
+Default port: `3001` (configurable via `SERVER_PORT` env var)
+
+**Directus Backend**
+```
+http://127.0.0.1:8055
+```
+Default port: `8055` (configured via `DIRECTUS_URL` env var)
+
+## Authentication Methods
+
+Genie Helper uses multiple authentication strategies depending on the endpoint:
+
+### 1. Directus JWT (User Authentication)
+
+Most user-facing endpoints require a Directus JWT token obtained via login:
+
+```bash
+curl -X POST http://127.0.0.1:8055/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"password"}'
+```
+
+Response:
+```json
+{
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "refresh_token": "..."
+  }
+}
+```
+
+Include the access token in requests:
+```bash
+Authorization: Bearer <access_token>
+```
+
+### 2. Shared Secret (Server-to-Server)
+
+Internal endpoints like `/api/credentials/store` and `/api/credentials/reveal` use a shared secret header:
+
+```bash
+X-RBAC-SYNC-SECRET: <RBAC_SYNC_WEBHOOK_SECRET>
+```
+
+This secret is configured in the `.env` file and should never be exposed to clients.
+
+### 3. Admin Token (Proxied Operations)
+
+Some endpoints use the Directus admin token server-side to perform privileged operations (e.g., user registration). This token is never exposed to clients.
+
+## Rate Limiting & Tiers
+
+Certain operations (e.g., media job enqueuing) enforce subscription tier limits via the `canPerform()` validator. Responses include:
+
+```json
+{
+  "error": "tier_limit_reached",
+  "reason": "limit_reached",
+  "message": "You have reached your plan limit for this feature. Upgrade to continue."
+}
+```
+
+## Error Handling
+
+All endpoints return consistent error structures:
+
+**Success:**
+```json
+{
+  "ok": true,
+  "success": true,
+  "...": "endpoint-specific fields"
+}
+```
+
+**Error:**
+```json
+{
+  "ok": false,
+  "success": false,
+  "error": "Error message description"
+}
+```
+
+Common HTTP status codes:
+- `200` - Success
+- `400` - Bad request (missing required fields)
+- `401` - Unauthorized (invalid/missing token)
+- `403` - Forbidden (tier limit or permissions)
+- `404` - Not found
+- `500` - Internal server error
+- `502` - Upstream service error (Ollama, Directus)
+
+## CORS & Headers
+
+The API server is configured with permissive CORS (`origin: true`) for development. All endpoints accept JSON bodies:
+
+```bash
+Content-Type: application/json
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="key" href="/api/authentication">
+    Learn about Directus JWT flows and admin tokens
+  </Card>
+  <Card title="Credentials API" icon="lock" href="/api/credentials">
+    Encrypt and decrypt platform credentials
+  </Card>
+  <Card title="Queue Management" icon="layer-group" href="/api/queue">
+    Manage BullMQ media job queues
+  </Card>
+  <Card title="Captions" icon="closed-captioning" href="/api/captions">
+    Generate AI-powered social media captions
+  </Card>
+  <Card title="Genie Chat" icon="robot" href="/api/genie-chat">
+    Stream AI agent responses via SSE
+  </Card>
+</CardGroup>

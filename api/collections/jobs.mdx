@@ -1,0 +1,378 @@
+---
+title: Jobs Collections
+description: Background job tracking and human-in-the-loop session management
+---
+
+## Overview
+
+Two collections manage background operations: `media_jobs` for BullMQ job records, and `hitl_sessions` for human-in-the-loop login requests.
+
+---
+
+## media_jobs
+
+Tracks BullMQ background jobs for media processing operations. Each job record corresponds to a queue entry in Redis.
+
+### Purpose
+
+- Track status of background media operations
+- Store job metadata, progress, and results
+- Enable job retry and error handling
+- Link jobs to creator profiles and media items
+- Provide audit trail for all media operations
+
+### Job Types
+
+| Type | Description | Worker Queue |
+|------|-------------|-------------|
+| `scrape_profile` | Scrape platform for new content and metrics | `scrape-jobs` |
+| `publish_post` | Publish scheduled post to platform(s) | `media-jobs` |
+| `apply_watermark` | Add watermark to image/video using ImageMagick | `media-jobs` |
+| `create_teaser` | Generate video preview using FFmpeg | `media-jobs` |
+| `crop_media` | Crop/resize media file | `media-jobs` |
+| `compress_media` | Compress media for faster delivery | `media-jobs` |
+
+### Key Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `job_type` | String | One of the job types listed above |
+| `status` | String | `queued`, `processing`, `completed`, `failed` |
+| `creator_profile_id` | Foreign Key | Optional link to `creator_profiles` |
+| `media_id` | Foreign Key | Optional link to `scraped_media` |
+| `scheduled_post_id` | Foreign Key | Optional link to `scheduled_posts` |
+| `bull_job_id` | String | BullMQ Redis job ID for status tracking |
+| `params` | JSON | Job-specific parameters |
+| `progress` | Integer | 0-100 completion percentage |
+| `result` | JSON | Job output data on completion |
+| `error_message` | Text | Error details if status=failed |
+| `retry_count` | Integer | Number of retry attempts |
+| `started_at` | DateTime | When job processing began |
+| `completed_at` | DateTime | When job finished (success or failure) |
+| `created_at` | DateTime | Job creation timestamp |
+
+### Example Queries
+
+#### Create Scrape Job
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "create-item",
+  arguments: {
+    collection: "media_jobs",
+    data: {
+      job_type: "scrape_profile",
+      creator_profile_id: "profile-uuid",
+      status: "queued",
+      params: {
+        platform: "onlyfans",
+        scrape_type: "full",
+        max_items: 100
+      }
+    }
+  }
+});
+```
+
+```bash REST API
+curl -X POST "https://geniehelper.com/api/directus/items/media_jobs" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_type": "scrape_profile",
+    "creator_profile_id": "profile-uuid",
+    "status": "queued",
+    "params": {
+      "platform": "onlyfans",
+      "scrape_type": "full",
+      "max_items": 100
+    }
+  }'
+```
+</CodeGroup>
+
+#### Monitor Job Status
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-item",
+  arguments: {
+    collection: "media_jobs",
+    id: "job-uuid",
+    fields: ["id", "job_type", "status", "progress", "error_message"]
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/media_jobs/JOB_ID" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'fields=id,job_type,status,progress,error_message'
+```
+</CodeGroup>
+
+#### List Recent Jobs
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-items",
+  arguments: {
+    collection: "media_jobs",
+    fields: ["id", "job_type", "status", "progress", "created_at"],
+    sort: ["-created_at"],
+    limit: 20
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/media_jobs" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'sort=-created_at' \
+  --data-urlencode 'limit=20'
+```
+</CodeGroup>
+
+#### Find Failed Jobs
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-items",
+  arguments: {
+    collection: "media_jobs",
+    fields: ["id", "job_type", "error_message", "retry_count", "created_at"],
+    filter: {
+      status: { _eq: "failed" },
+      created_at: { _gte: "$NOW(-24 hours)" }
+    },
+    sort: ["-created_at"]
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/media_jobs" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'filter[status][_eq]=failed' \
+  --data-urlencode 'filter[created_at][_gte]=$NOW(-24 hours)' \
+  --data-urlencode 'sort=-created_at'
+```
+</CodeGroup>
+
+---
+
+## hitl_sessions
+
+Human-in-the-loop login requests displayed as yellow dashboard alerts when automated scraping requires manual intervention.
+
+### Purpose
+
+- Request manual login when platform cookies expire
+- Display browser extension flow prompts in dashboard
+- Track session resolution status
+- Coordinate between automated scraping and human intervention
+
+### Key Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `creator_profile_id` | Foreign Key | Links to `creator_profiles` |
+| `platform` | String | Platform requiring login |
+| `session_type` | String | `login_required`, `cookies_expired`, `2fa_required` |
+| `status` | String | `pending`, `in_progress`, `resolved`, `cancelled` |
+| `alert_message` | Text | Message shown in dashboard alert |
+| `resolution_method` | String | How resolved: `browser_extension`, `manual_cookies`, `oauth` |
+| `resolved_at` | DateTime | When session was resolved |
+| `expires_at` | DateTime | Auto-cancel if not resolved by this time |
+| `created_at` | DateTime | Session creation timestamp |
+
+### Dashboard Integration
+
+HITL sessions trigger yellow banner alerts in the dashboard:
+
+```javascript
+// Dashboard polling logic
+const activeSessions = await directus.items('hitl_sessions').readByQuery({
+  filter: {
+    creator_profile_id: currentUser.id,
+    status: { _in: ['pending', 'in_progress'] }
+  }
+});
+
+if (activeSessions.data.length > 0) {
+  showYellowBanner(activeSessions.data[0].alert_message);
+}
+```
+
+### Example Queries
+
+#### Create HITL Session
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "create-item",
+  arguments: {
+    collection: "hitl_sessions",
+    data: {
+      creator_profile_id: "profile-uuid",
+      platform: "onlyfans",
+      session_type: "cookies_expired",
+      status: "pending",
+      alert_message: "OnlyFans login required. Click to connect using browser extension.",
+      expires_at: "$NOW(+24 hours)"
+    }
+  }
+});
+```
+
+```bash REST API
+curl -X POST "https://geniehelper.com/api/directus/items/hitl_sessions" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "creator_profile_id": "profile-uuid",
+    "platform": "onlyfans",
+    "session_type": "cookies_expired",
+    "status": "pending",
+    "alert_message": "OnlyFans login required. Click to connect using browser extension."
+  }'
+```
+</CodeGroup>
+
+#### List Active Sessions
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-items",
+  arguments: {
+    collection: "hitl_sessions",
+    fields: ["id", "platform", "session_type", "alert_message", "status"],
+    filter: {
+      status: { _in: ["pending", "in_progress"] },
+      expires_at: { _gte: "$NOW" }
+    }
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/hitl_sessions" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'filter[status][_in]=pending,in_progress' \
+  --data-urlencode 'filter[expires_at][_gte]=$NOW'
+```
+</CodeGroup>
+
+#### Resolve Session
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "update-item",
+  arguments: {
+    collection: "hitl_sessions",
+    id: "session-uuid",
+    data: {
+      status: "resolved",
+      resolution_method: "browser_extension",
+      resolved_at: new Date().toISOString()
+    }
+  }
+});
+```
+
+```bash REST API
+curl -X PATCH "https://geniehelper.com/api/directus/items/hitl_sessions/SESSION_ID" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": "resolved",
+    "resolution_method": "browser_extension",
+    "resolved_at": "2026-03-04T12:00:00Z"
+  }'
+```
+</CodeGroup>
+
+## Related Collections
+
+- **`creator_profiles`** - Platform accounts that jobs operate on
+- **`scraped_media`** - Content processed by media jobs
+- **`scheduled_posts`** - Posts published by publish_post jobs
+- **`platform_sessions`** - Browser cookies that resolve HITL sessions
+
+## Workflow Integration
+
+### Scraping with HITL Flow
+
+1. User clicks "Let's Go" scrape button on dashboard
+2. System checks `platform_sessions` for valid cookies
+3. **If cookies exist**: Create `media_jobs` entry with type `scrape_profile`
+4. **If no cookies**: Create `hitl_sessions` entry instead
+5. Dashboard shows yellow banner: "Login required. Click to connect."
+6. User completes login via browser extension
+7. Extension captures cookies → stored in `platform_sessions`
+8. HITL session marked `resolved`
+9. System creates `media_jobs` entry, scraping proceeds
+
+### Media Processing Flow
+
+1. User clicks crop/watermark/teaser button in Media Library
+2. Frontend creates `media_jobs` entry via `POST /api/queue/enqueue`
+3. BullMQ worker picks up job from Redis queue
+4. Worker updates job `status` and `progress` fields
+5. On completion: job `result` contains output file URLs
+6. Frontend polls job status and displays result
+
+## Best Practices
+
+1. **Poll job status** - Use `bull_job_id` to track BullMQ queue position
+2. **Implement retry logic** - Jobs with `retry_count < 3` can be retried
+3. **Clean up completed jobs** - Archive jobs older than 30 days
+4. **Monitor HITL expiry** - Auto-cancel sessions after 24 hours
+5. **Handle concurrent HITLs** - Only show one HITL alert per platform at a time
+
+## BullMQ Integration
+
+The media worker (`media-worker/index.js`) processes jobs from Redis queues:
+
+```javascript
+// Queue configuration
+const scrapeQueue = new Queue('scrape-jobs', { connection: redis });
+const mediaQueue = new Queue('media-jobs', { connection: redis });
+
+// Worker processors
+const scrapeWorker = new Worker('scrape-jobs', async (job) => {
+  // Update media_jobs status
+  await directus.items('media_jobs').updateOne(job.data.recordId, {
+    status: 'processing',
+    bull_job_id: job.id
+  });
+  
+  // Process job...
+});
+```
+
+## See Also
+
+- [Creator Profiles](/api/collections/creator-profiles) - Platform account management
+- [Media Collections](/api/collections/media) - Content storage
+- [Stagehand MCP Tools](/api/mcp/stagehand) - Browser automation for scraping

@@ -1,0 +1,330 @@
+---
+title: Browser Extension
+description: Cookie capture extension for seamless platform authentication and HITL sessions
+---
+
+## Overview
+
+The **GenieHelper Cookie Capture** browser extension enables seamless authentication with creator platforms by capturing and storing session cookies. This eliminates the need for repeatedly entering credentials and enables automated scraping and publishing workflows.
+
+## Supported Platforms
+
+The extension supports cookie capture for 9 creator platforms:
+
+- OnlyFans
+- Fansly
+- Pornhub
+- XVideos
+- Instagram
+- TikTok
+- X (Twitter)
+- Reddit
+- YouTube
+
+## How It Works
+
+### Cookie Capture Flow
+
+1. **Navigate to Platform**: Log in to any supported platform in your browser
+2. **Open Extension**: Click the GenieHelper extension icon
+3. **Capture Cookies**: The extension detects the current platform and captures all session cookies
+4. **Secure Storage**: Cookies are encrypted with AES-256-GCM and stored in the `platform_sessions` collection
+5. **Agent Reuse**: Stagehand browser sessions can now inject these cookies to bypass login
+
+### Extension Components
+
+#### Manifest (MV3)
+
+The extension uses Manifest V3 with the following permissions:
+
+- `cookies`: Read platform session cookies
+- `activeTab`: Detect current platform from active tab
+- `storage`: Store configuration (server URL, Directus token, creator profile ID)
+
+#### Background Service Worker
+
+**Location**: `/home/daytona/workspace/source/extension/background.js:1`
+
+Handles two message types:
+
+- `CAPTURE_COOKIES`: Collects cookies for detected platform and POSTs to `/api/credentials/store-platform-session`
+- `GET_CURRENT_TAB`: Returns current tab URL and detected platform
+
+**Platform Detection**:
+
+```javascript
+const PLATFORM_DOMAINS = {
+  onlyfans: ["onlyfans.com"],
+  fansly: ["fansly.com"],
+  pornhub: ["pornhub.com"],
+  // ... 9 platforms total
+};
+```
+
+#### Popup Interface
+
+**Location**: `/home/daytona/workspace/source/extension/popup.js:1`
+
+Provides:
+
+- **Platform Detection Indicator**: Shows detected platform with colored dot
+- **Capture Button**: Triggers cookie capture (disabled if not configured)
+- **Settings Link**: Opens options page for configuration
+- **Status Messages**: Real-time feedback during capture process
+
+## Configuration
+
+### Extension Options
+
+The extension requires three configuration values stored in `chrome.storage.sync`:
+
+| Field | Description |
+|-------|-------------|
+| `serverUrl` | Your GenieHelper server URL (e.g., `https://geniehelper.com`) |
+| `directusToken` | Directus authentication token for API access |
+| `creatorProfileId` | The ID of the `creator_profiles` record to associate cookies with |
+
+### First-Time Setup
+
+1. Install the extension from Chrome Web Store or Firefox Add-ons
+2. Right-click extension icon → Options
+3. Enter your server URL, Directus token, and creator profile ID
+4. Navigate to a supported platform and log in
+5. Click extension icon → "Capture Cookies"
+
+## HITL (Human-in-the-Loop) Sessions
+
+### What is HITL?
+
+HITL sessions are triggered when automated scraping fails due to missing or expired cookies. Instead of failing silently, Genie Helper creates a **HITL session request** that alerts you to log in manually.
+
+### HITL Flow
+
+1. **Scrape Attempt**: User clicks "Scrape Profile" in dashboard
+2. **Cookie Check**: System checks `platform_sessions` for valid cookies
+3. **HITL Trigger**: If no valid session exists, creates `hitl_sessions` record
+4. **Dashboard Alert**: Yellow banner appears: "Login Required: [Platform]"
+5. **User Action**: User clicks banner → opens platform in new tab → logs in → captures cookies via extension
+6. **Session Update**: `hitl_sessions.status` changes from `pending` → `completed`
+7. **Auto-Retry**: Original scrape job automatically resumes with fresh cookies
+
+### HITL Sessions Collection
+
+**Collection**: `hitl_sessions`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Session identifier |
+| `creator_profile_id` | M2O | Link to creator profile |
+| `platform` | String | Platform requiring login (e.g., "onlyfans") |
+| `status` | String | `pending`, `completed`, `expired`, `failed` |
+| `requested_at` | Timestamp | When HITL was triggered |
+| `completed_at` | Timestamp | When user completed login |
+| `notes` | Text | Error details or user notes |
+
+### Dashboard Integration
+
+The dashboard polls for pending HITL sessions:
+
+**Dashboard Banner Logic**:
+
+```javascript
+// Check for pending HITL sessions
+const response = await api.get('/api/directus/items/hitl_sessions', {
+  params: {
+    filter: { status: { _eq: 'pending' } },
+    fields: ['id', 'platform', 'requested_at']
+  }
+});
+
+if (response.data.data.length > 0) {
+  // Show yellow alert banner
+  showHITLAlert(response.data.data[0]);
+}
+```
+
+## Cookie Storage & Security
+
+### Platform Sessions Collection
+
+**Collection**: `platform_sessions`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Session identifier |
+| `creator_profile_id` | M2O | Creator profile this session belongs to |
+| `platform` | String | Platform name (e.g., "onlyfans") |
+| `cookies` | JSON | Encrypted cookie array |
+| `user_agent` | String | Browser user agent (for Stagehand reuse) |
+| `captured_at` | Timestamp | When cookies were captured |
+| `expires_at` | Timestamp | Estimated expiration (90 days default) |
+| `last_used_at` | Timestamp | Last time cookies were injected into Stagehand |
+
+### Encryption
+
+All cookies are encrypted server-side using **AES-256-GCM** before storage.
+
+**Encryption Location**: `/home/daytona/workspace/source/server/utils/credentialsCrypto.js:1`
+
+**Envelope Format**:
+
+```
+v1:<iv_b64>:<tag_b64>:<ciphertext_b64>
+```
+
+**Example Storage**:
+
+```json
+{
+  "enc": "v1:k8sQn2F...base64_iv:xR9pL...base64_tag:mZ3cV...base64_ciphertext"
+}
+```
+
+**Environment Variables**:
+
+- `CREDENTIALS_ENC_KEY_B64`: Base64-encoded 32-byte encryption key
+- `CREDENTIALS_ENC_AAD`: Optional additional authenticated data (default: "agentx-v1")
+
+### Cookie Normalization
+
+Before encryption, cookies are normalized to remove Chrome-internal fields:
+
+**Extension Normalization** (`background.js:94`):
+
+```javascript
+const normalized = allCookies.map((c) => ({
+  name: c.name,
+  value: c.value,
+  domain: c.domain,
+  path: c.path,
+  secure: c.secure,
+  httpOnly: c.httpOnly,
+  sameSite: c.sameSite,
+  expirationDate: c.expirationDate,
+}));
+```
+
+## Stagehand Cookie Injection
+
+Once captured, cookies are injected into Stagehand browser sessions for automated workflows.
+
+### Injection Flow
+
+1. **Fetch Session**: Retrieve latest `platform_sessions` record for platform
+2. **Decrypt Cookies**: Call `decryptJSON(session.cookies)`
+3. **Start Stagehand**: Initialize browser session via Stagehand MCP
+4. **Inject Cookies**: Call `set-cookies` tool with decrypted cookie array
+5. **Navigate**: Load platform URL with authenticated session
+6. **Extract Data**: Scrape profile stats, posts, earnings, etc.
+
+**Action Runner Step** (`stepExecutors.js:222`):
+
+```javascript
+async stagehand_cookie_login(config, signal) {
+  const { creator_profile_id, platform } = config;
+  
+  // 1. Fetch encrypted cookies from Directus
+  const session = await directusFetch(
+    `/items/platform_sessions?filter[creator_profile_id]=${creator_profile_id}&filter[platform]=${platform}&limit=1`
+  );
+  
+  // 2. Start Stagehand session
+  const startRes = await stagehandFetch("/v1/sessions/start", { /* ... */ });
+  const sessionId = startRes.sessionId;
+  
+  // 3. Inject cookies
+  await stagehandFetch(`/v1/sessions/${sessionId}/cookies`, { cookies });
+  
+  // 4. Navigate to platform
+  await stagehandFetch(`/v1/sessions/${sessionId}/navigate`, { url: targetUrl });
+  
+  return { sessionId };
+}
+```
+
+## Extension Development
+
+### File Structure
+
+```
+extension/
+├── manifest.json              # Chrome/Edge manifest (MV3)
+├── manifest.firefox.json      # Firefox manifest (MV3)
+├── background.js              # Service worker (message handlers)
+├── popup.html                 # Extension popup UI
+├── popup.js                   # Popup logic + platform detection
+├── options.html               # Configuration page
+├── options.js                 # Settings persistence
+└── icons/
+    ├── icon16.png
+    ├── icon48.png
+    └── icon128.png
+```
+
+### Building for Distribution
+
+**Chrome Web Store**:
+
+1. Zip entire `extension/` directory (exclude `.firefox.json`)
+2. Upload to Chrome Developer Dashboard
+3. Submit privacy policy (required for `cookies` permission)
+
+**Firefox Add-ons**:
+
+1. Rename `manifest.firefox.json` → `manifest.json`
+2. Zip directory
+3. Upload to Firefox Add-on Developer Hub
+
+### Privacy Policy
+
+The extension **must** include a privacy policy due to cookie permissions:
+
+**Key Points**:
+
+- Cookies are only captured on user action (button click)
+- Cookies are sent only to user's configured GenieHelper server
+- No third-party tracking or analytics
+- All data encrypted server-side with AES-256-GCM
+
+## Troubleshooting
+
+### "Not Configured" Error
+
+If extension shows "Not Configured" banner:
+
+1. Open extension options (right-click icon → Options)
+2. Verify server URL includes `https://` and no trailing slash
+3. Confirm Directus token is valid (test in dashboard)
+4. Ensure creator profile ID exists in `creator_profiles` collection
+
+### "No Cookies Found" Error
+
+If capture fails with no cookies:
+
+1. Confirm you're logged into the platform
+2. Check platform is in supported list
+3. Clear browser cookies and re-login
+4. Try capturing immediately after login
+
+### "Server Error 401" Error
+
+If API returns 401 Unauthorized:
+
+1. Directus token may be expired or invalid
+2. Regenerate token in Directus admin panel
+3. Update extension options with new token
+
+### HITL Session Stuck in "Pending"
+
+If HITL session doesn't complete:
+
+1. Manually update `hitl_sessions` status to `completed` in Directus
+2. Verify `platform_sessions` record was created
+3. Check `captured_at` timestamp is recent
+4. Re-trigger scrape job from dashboard
+
+## Related Documentation
+
+- [Platform Connections](/integrations/platform-connections) - Managing creator platform credentials
+- [Stagehand Automation](/integrations/stagehand) - Browser automation workflows
+- [Directus CMS](/integrations/directus-cms) - Collections and data model

@@ -1,0 +1,326 @@
+---
+title: Media Collections
+description: Content storage with engagement metrics and post scheduling
+---
+
+## Overview
+
+Two primary collections manage creator media content: `scraped_media` for content with engagement metrics, and `scheduled_posts` for the publishing queue.
+
+---
+
+## scraped_media
+
+Stores creator content scraped from platform accounts, including engagement metrics, taxonomy classifications, and media metadata.
+
+### Purpose
+
+- Archive all scraped content from connected platforms
+- Track engagement metrics (likes, comments, views, revenue)
+- Store taxonomy classifications for content discovery
+- Link media to creator profiles and platform sources
+- Enable AI-powered content analysis and recommendations
+
+### Key Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `creator_profile_id` | Foreign Key | Links to `creator_profiles` |
+| `platform` | String | Source platform ("onlyfans", "fansly", etc.) |
+| `platform_media_id` | String | Platform's unique identifier for this content |
+| `media_type` | String | `image`, `video`, `gallery`, `text` |
+| `media_url` | String | Original media URL or local storage path |
+| `thumbnail_url` | String | Thumbnail/preview image URL |
+| `caption` | Text | Original caption/description |
+| `posted_at` | DateTime | When content was posted on platform |
+| `likes_count` | Integer | Number of likes |
+| `comments_count` | Integer | Number of comments |
+| `views_count` | Integer | View count |
+| `revenue` | Decimal | Revenue generated (if available) |
+| `taxonomy_tags` | JSON | Array of taxonomy dimension assignments |
+| `scraped_at` | DateTime | When this was scraped |
+| `created_at` | DateTime | Record creation timestamp |
+
+### Taxonomy Integration
+
+Media items are classified using the 6-concept taxonomy system:
+
+```json
+// taxonomy_tags field example
+{
+  "body_type": ["athletic", "curvy"],
+  "performance_style": ["sensual", "playful"],
+  "setting": ["bedroom", "outdoor"],
+  "attire": ["lingerie", "casual"],
+  "audience_appeal": ["mainstream", "fetish"],
+  "production_quality": ["professional"]
+}
+```
+
+See [Taxonomy Collections](/api/collections/taxonomy) for full classification system details.
+
+### Example Queries
+
+#### List Recent Media
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-items",
+  arguments: {
+    collection: "scraped_media",
+    fields: ["id", "media_type", "caption", "likes_count", "posted_at"],
+    sort: ["-posted_at"],
+    limit: 20
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/scraped_media" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'fields=id,media_type,caption,likes_count,posted_at' \
+  --data-urlencode 'sort=-posted_at' \
+  --data-urlencode 'limit=20'
+```
+</CodeGroup>
+
+#### Find Top Performing Content
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-items",
+  arguments: {
+    collection: "scraped_media",
+    fields: ["id", "caption", "likes_count", "revenue", "media_type"],
+    filter: {
+      media_type: { _eq: "video" },
+      posted_at: { _gte: "$NOW(-30 days)" }
+    },
+    sort: ["-likes_count"],
+    limit: 10
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/scraped_media" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'filter[media_type][_eq]=video' \
+  --data-urlencode 'filter[posted_at][_gte]=$NOW(-30 days)' \
+  --data-urlencode 'sort=-likes_count' \
+  --data-urlencode 'limit=10'
+```
+</CodeGroup>
+
+#### Search by Taxonomy Tags
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "search-items",
+  arguments: {
+    collection: "scraped_media",
+    query: "athletic",
+    fields: ["id", "caption", "taxonomy_tags", "media_type"]
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/scraped_media" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'search=athletic'
+```
+</CodeGroup>
+
+---
+
+## scheduled_posts
+
+Post publishing queue polled every 60 seconds by the media worker.
+
+### Purpose
+
+- Queue posts for cross-platform publishing
+- Schedule posts for specific dates/times
+- Track publishing status and errors
+- Support multi-platform simultaneous posting
+
+### Key Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `creator_profile_id` | Foreign Key | Links to `creator_profiles` |
+| `media_id` | Foreign Key | Optional link to `scraped_media` |
+| `platforms` | JSON | Array of platform targets `["onlyfans", "fansly"]` |
+| `caption` | Text | Post caption/description |
+| `media_urls` | JSON | Array of media file URLs to publish |
+| `scheduled_for` | DateTime | When to publish (null = immediate) |
+| `status` | String | `pending`, `processing`, `published`, `failed` |
+| `published_at` | DateTime | Actual publish timestamp |
+| `error_message` | Text | Error details if status=failed |
+| `retry_count` | Integer | Number of publish attempts |
+| `created_at` | DateTime | Queue entry creation timestamp |
+
+### Polling Mechanism
+
+The media worker (`media-worker/index.js`) polls this collection every 60 seconds:
+
+```javascript
+// Worker logic (simplified)
+setInterval(async () => {
+  const posts = await directus.items('scheduled_posts').readByQuery({
+    filter: {
+      status: 'pending',
+      scheduled_for: { _lte: new Date() }
+    }
+  });
+  
+  for (const post of posts) {
+    await publishQueue.add('publish_post', { postId: post.id });
+  }
+}, 60000);
+```
+
+### Example Queries
+
+#### Create Scheduled Post
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "create-item",
+  arguments: {
+    collection: "scheduled_posts",
+    data: {
+      creator_profile_id: "profile-uuid",
+      platforms: ["onlyfans", "fansly"],
+      caption: "New content dropping tonight!",
+      media_urls: ["/uploads/video123.mp4"],
+      scheduled_for: "2026-03-05T20:00:00Z",
+      status: "pending"
+    }
+  }
+});
+```
+
+```bash REST API
+curl -X POST "https://geniehelper.com/api/directus/items/scheduled_posts" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "creator_profile_id": "profile-uuid",
+    "platforms": ["onlyfans", "fansly"],
+    "caption": "New content dropping tonight!",
+    "media_urls": ["/uploads/video123.mp4"],
+    "scheduled_for": "2026-03-05T20:00:00Z",
+    "status": "pending"
+  }'
+```
+</CodeGroup>
+
+#### List Pending Posts
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "read-items",
+  arguments: {
+    collection: "scheduled_posts",
+    fields: ["id", "caption", "platforms", "scheduled_for", "status"],
+    filter: {
+      status: { _in: ["pending", "processing"] }
+    },
+    sort: ["scheduled_for"]
+  }
+});
+```
+
+```bash REST API
+curl -X GET "https://geniehelper.com/api/directus/items/scheduled_posts" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -G \
+  --data-urlencode 'filter[status][_in]=pending,processing' \
+  --data-urlencode 'sort=scheduled_for'
+```
+</CodeGroup>
+
+#### Update Post Status
+
+<CodeGroup>
+```javascript MCP Tool
+await use_mcp_tool({
+  server_name: "directus",
+  tool_name: "update-item",
+  arguments: {
+    collection: "scheduled_posts",
+    id: "post-uuid",
+    data: {
+      status: "published",
+      published_at: new Date().toISOString()
+    }
+  }
+});
+```
+
+```bash REST API
+curl -X PATCH "https://geniehelper.com/api/directus/items/scheduled_posts/POST_ID" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": "published",
+    "published_at": "2026-03-04T12:00:00Z"
+  }'
+```
+</CodeGroup>
+
+## Related Collections
+
+- **`creator_profiles`** - Platform accounts that create/publish content
+- **`media_jobs`** - Background processing jobs for media operations
+- **`taxonomy_mapping`** - Tag classifications applied to media
+
+## Workflow Integration
+
+### Content Scraping → Storage Flow
+
+1. Media worker runs `scrape_profile` job
+2. Stagehand extracts content from platform
+3. Records created in `scraped_media` with engagement metrics
+4. AI taxonomy classification applied (optional)
+5. Content available in Media Library dashboard
+
+### Post Publishing Flow
+
+1. User creates post via `/app/calendar` or AI chat
+2. Record created in `scheduled_posts` with status=`pending`
+3. Worker polls every 60s for posts where `scheduled_for <= NOW`
+4. Creates `media_jobs` entry with type `publish_post`
+5. Stagehand browser automation publishes to target platforms
+6. Status updated to `published` or `failed` with error details
+
+## Best Practices
+
+1. **Use scheduled_for for timing** - Set to current time for immediate publish, future time for scheduling
+2. **Monitor retry_count** - Posts failing 3+ times may need manual intervention
+3. **Clean up old media** - Archive or delete scraped_media after 90+ days to manage storage
+4. **Batch taxonomy classification** - Use `taxonomy-tag` action flow to classify multiple items
+5. **Handle platform differences** - Some platforms may require platform-specific caption formats
+
+## See Also
+
+- [Creator Profiles](/api/collections/creator-profiles) - Platform account management
+- [Jobs Collections](/api/collections/jobs) - Background job tracking
+- [Taxonomy Collections](/api/collections/taxonomy) - Content classification system

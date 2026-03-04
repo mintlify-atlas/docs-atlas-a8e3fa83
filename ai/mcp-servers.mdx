@@ -1,0 +1,155 @@
+---
+title: MCP Servers
+description: Model Context Protocol servers that extend the AI agent with 29 tools across data, inference, and browser automation
+---
+
+Genie Helper uses three MCP (Model Context Protocol) servers to provide the AI agent with 29 specialized tools for data management, LLM inference, and browser automation.
+
+## Architecture
+
+MCP servers run as child processes of AnythingLLM and communicate via stdio transport. They auto-boot on AnythingLLM startup via a patched `server/utils/boot/index.js` → `bootMCPServers()` call.
+
+**Configuration**: `storage/plugins/anythingllm_mcp_servers.json`
+
+---
+
+## Directus MCP Server (17 tools)
+
+**Script**: `scripts/directus-mcp-server.mjs`
+
+Provides CRUD operations for Directus collections, user management, file handling, and flow triggering.
+
+### Collections
+
+| Tool | Description |
+|------|-------------|
+| `list-collections` | List all custom Directus collections (excludes system tables) |
+| `get-collection-schema` | Get field schema for a collection with types and requirements |
+
+### Items CRUD
+
+| Tool | Description |
+|------|-------------|
+| `read-items` | Read items with optional filtering, sorting, pagination, and field selection |
+| `read-item` | Read a single item by ID (UUID) |
+| `create-item` | Create a new item with tier-gating for `media_jobs` operations |
+| `update-item` | Update an existing item by ID |
+| `delete-item` | Delete an item from a collection |
+| `search-items` | Full-text search across items in a collection |
+
+### Users
+
+| Tool | Description |
+|------|-------------|
+| `get-me` | Get the current authenticated user with full profile fields |
+| `list-users` | List users with optional filtering (admin operation) |
+| `get-user` | Get a single user by ID with role information |
+| `update-user` | Update a user by ID (admin operation) |
+| `create-user` | Create a new user (requires email, password, role UUID) |
+
+### Files
+
+| Tool | Description |
+|------|-------------|
+| `list-files` | List files with optional folder filtering and metadata |
+| `get-file` | Get file metadata and download URL by ID |
+
+### Flows
+
+| Tool | Description |
+|------|-------------|
+| `list-flows` | List all available Directus Flows with trigger information |
+| `trigger-flow` | Trigger a flow by UUID with optional JSON payload |
+
+### Tier Gating
+
+The `create-item` tool includes built-in rate limiting for `media_jobs` creation:
+- Checks feature access flags (`ai_clip_ops`, `watermark_ops`, etc.) against subscription tier
+- Enforces usage quotas by counting `user_usage_counts` within billing cycle
+- Throws `tier_limit:` prefixed errors visible to the agent
+- Fails open on unexpected errors to maintain availability
+
+---
+
+## Ollama MCP Server (3 tools)
+
+**Script**: `scripts/ollama-mcp-server.mjs`
+
+Exposes Ollama's local LLM inference API for text generation, chat, and model management.
+
+| Tool | Description |
+|------|-------------|
+| `list-models` | List all locally available Ollama models with size and modified timestamps |
+| `generate` | Single-turn completion with prompt, optional system message, temperature, and max_tokens |
+| `chat` | Multi-turn chat using messages array with role/content objects |
+
+### Configuration
+
+- **Default URL**: `http://127.0.0.1:11434`
+- **Default model**: `qwen-2.5:latest` (configurable via `OLLAMA_MODEL` env var)
+- **Temperature range**: 0-2 (default 0.7)
+- **Stream mode**: Disabled (all responses are synchronous)
+
+---
+
+## Stagehand MCP Server (9 tools)
+
+**Script**: `scripts/stagehand-mcp-server.mjs`
+
+Wraps the Stagehand browser automation server (port 3002) for web scraping, platform interactions, and HITL (human-in-the-loop) workflows.
+
+### Session Management
+
+| Tool | Description |
+|------|-------------|
+| `start-session` | Start a new browser session with configurable headless mode, returns session ID |
+| `close-session` | End and clean up a browser session |
+
+### Navigation & Interaction
+
+| Tool | Description |
+|------|-------------|
+| `navigate` | Navigate to a URL in an existing session |
+| `act` | Perform browser actions using natural language ("Click the Login button") |
+| `observe` | Observe interactive elements on the current page |
+
+### Data Extraction
+
+| Tool | Description |
+|------|-------------|
+| `extract` | Extract structured data using natural language instruction and optional JSON schema |
+| `screenshot` | Take a screenshot of the current browser page (returns base64 or URL) |
+
+### Cookie Management
+
+| Tool | Description |
+|------|-------------|
+| `get-cookies` | Get all cookies from the current browser session |
+| `set-cookies` | Inject cookies for bypassing login (HITL workflow) |
+
+### Configuration
+
+- **Stagehand URL**: `http://127.0.0.1:3002`
+- **Default model**: `ollama/qwen-2.5` (for vision/element detection)
+- **Launch args**: Stealth mode enabled (`--disable-blink-features=AutomationControlled`)
+- **Window size**: 1920x1080
+- **Resource limits**: ~300MB RAM per active session, ~33 concurrent sessions ceiling
+
+### Error Handling
+
+All tools surface HTTP errors to the agent with status code and error message extraction from Stagehand responses.
+
+---
+
+## Related Collections
+
+- **`platform_sessions`**: Stores encrypted browser cookies captured via extension or HITL
+- **`hitl_sessions`**: Human-in-the-loop login requests (triggers yellow dashboard alert)
+- **`media_jobs`**: BullMQ job records for scrape, watermark, teaser, publish operations
+- **`action_flows`**: Flow definitions consumed by Action Runner (slug → steps JSON)
+
+## See Also
+
+- [Action Runner](/ai/action-runner) — Flow-based execution system that uses MCP tools
+- [Ollama Models](/ai/ollama-models) — Available LLM models and their roles
+- [Taxonomy System](/ai/taxonomy-system) — 6-concept content classification

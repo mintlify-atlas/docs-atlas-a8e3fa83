@@ -1,0 +1,130 @@
+---
+title: Introduction
+description: MCP-first AI agent platform for adult content creators - self-hosted, uncensored, and fully private
+---
+
+# Welcome to Genie Helper
+
+Genie Helper is an AI operations platform designed specifically for adult content creators. It connects to your OnlyFans and other creator platforms, scrapes your stats, classifies your content, drafts fan messages, schedules posts, and answers questions about your performance — all from a private chat interface running on your own server.
+
+<Note>
+**Self-hosted. Uncensored. No OpenAI tax.**
+
+Your data, your server, your sovereignty. The AI agent is powered by locally-running uncensored models. Nothing leaves your VPS.
+</Note>
+
+## What It Does
+
+Genie Helper automates the operational burden of managing your creator business:
+
+<CardGroup cols={2}>
+  <Card title="Platform Integration" icon="link">
+    Connect to OnlyFans and 8 other creator platforms. Automated scraping of stats, content, and engagement metrics.
+  </Card>
+  <Card title="Content Classification" icon="tags">
+    AI-powered taxonomy system with 3,208 classified tags across 6 super-concepts for intelligent content organization.
+  </Card>
+  <Card title="Fan Engagement" icon="message">
+    Draft personalized fan messages and responses. Track fan profiles and engagement data.
+  </Card>
+  <Card title="Content Scheduling" icon="calendar">
+    Schedule posts across multiple platforms. Post scheduler polls every 60 seconds for execution.
+  </Card>
+  <Card title="Media Processing" icon="film">
+    Watermark images, generate video teasers, and create thumbnails with ImageMagick and FFmpeg.
+  </Card>
+  <Card title="Performance Analytics" icon="chart-line">
+    Ask questions about your performance metrics and get AI-powered insights from your data.
+  </Card>
+</CardGroup>
+
+## Key Features
+
+### MCP-First Architecture
+
+Genie Helper is built on the Model Context Protocol (MCP) with **29 tools** across three MCP servers:
+
+- **Directus MCP** (17 tools): CRUD collections, trigger flows, manage users/files
+- **Ollama MCP** (3 tools): generate, chat, list-models
+- **Stagehand MCP** (9 tools): browser sessions, navigate, act, extract, cookies, screenshot
+
+### Action Runner System
+
+The Action Runner intercepts `[ACTION:slug:{"params"}]` tags from the AI model, strips them from visible chat, executes pre-built flows, and streams status back. No complex tool-calling required.
+
+**Available Actions:**
+
+| Action | Purpose |
+|--------|----------|
+| `scout-analyze` | Scrape URL + AI analysis |
+| `taxonomy-tag` | Auto-classify content with 6-concept taxonomy |
+| `post-create` | Draft platform-specific social post |
+| `message-generate` | Fan engagement message |
+| `memory-recall` | Search stored data + summarize |
+| `media-process` | Queue media job (watermark, teaser, compress) |
+
+### Uncensored Local Models
+
+Runs entirely on self-hosted Ollama models:
+
+- **dolphin3:8b-llama3.1** — Orchestrator / tool planning
+- **dolphin-mistral:7b** — Uncensored content writer / captions
+- **qwen-2.5:latest** — Primary agent / code / JSON
+- **scout-fast-tag:latest** — Fast taxonomy classifier
+- **bge-m3:latest** — Embeddings
+
+### Enterprise-Grade Security
+
+<Warning>
+Platform credentials are encrypted with AES-256-GCM server-side. No encryption keys ever touch the browser.
+</Warning>
+
+- Encrypted credential storage with `CREDENTIALS_ENC_KEY_B64`
+- Directus JWT authentication with auto-refresh
+- Admin impersonation for support workflows
+- RBAC role synchronization between Directus and AnythingLLM
+
+### Human-in-the-Loop Browser Automation
+
+When automated login fails, the system creates a HITL session request. You complete the login in your browser extension, and the captured cookies are automatically encrypted and stored for future use.
+
+## Tech Stack
+
+Genie Helper combines four powerful open-source platforms:
+
+<CodeGroup>
+```text Platform Overview
+AnythingLLM     Chat API + agent + embed widget
+Directus CMS    Collections, auth, REST API
+Ollama          Local LLM inference (port 11434)
+Stagehand       Browser automation server
+```
+
+```text Additional Services
+BullMQ          Media processing job queue
+Redis           Queue backend
+FFmpeg          Video processing
+ImageMagick     Image watermarking
+Nginx           Reverse proxy (via Plesk)
+```
+</CodeGroup>
+
+## Next Steps
+
+<Steps>
+  <Step title="Quick Start">
+    Follow the [Quick Start guide](/quickstart) to clone, install, and configure Genie Helper on your server.
+  </Step>
+  <Step title="Architecture Deep Dive">
+    Review the [Architecture documentation](/architecture) to understand how services communicate and data flows through the system.
+  </Step>
+  <Step title="Platform Connections">
+    Connect your creator platforms and start automating your workflow.
+  </Step>
+</Steps>
+
+---
+
+<Note>
+**Development Status:** Genie Helper is in active development. Current phase: 9F completed (AgentWidget, MCP schema fixes, cookie-first HITL).
+</Note>

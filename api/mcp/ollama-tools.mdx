@@ -1,0 +1,297 @@
+---
+title: Ollama MCP Tools
+description: Complete reference for all 3 Ollama MCP server tools
+---
+
+The Ollama MCP server provides 3 tools for interacting with locally-running Ollama models. These tools enable text generation, multi-turn chat, and model discovery.
+
+**Server name:** `ollama`
+**Version:** 1.0.0
+**Script:** `scripts/ollama-mcp-server.mjs`
+
+## Environment Variables
+
+```bash
+OLLAMA_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen-2.5:latest
+```
+
+---
+
+## Available Models
+
+Genie Helper uses multiple specialized Ollama models:
+
+| Model | Role | Size |
+|-------|------|------|
+| `qwen-2.5:latest` | Primary agent / code / JSON | 7B |
+| `dolphin3:8b-llama3.1-q4_K_M` | Orchestrator / tool planning | 8B |
+| `dolphin-mistral:7b` | Uncensored content writer | 7B |
+| `phi-3.5:latest` | Fallback classifier | 3.5B |
+| `llama3.2:3b` | Lightweight summarizer | 3B |
+| `scout-fast-tag:latest` | Fast taxonomy classifier | Custom |
+| `bge-m3:latest` | Embeddings | — |
+
+---
+
+## list-models
+
+List all locally available Ollama models.
+
+**Parameters:** None
+
+**Returns:** Array of model objects with `name`, `size`, and `modified_at` fields.
+
+**Example Response:**
+```json
+[
+  {
+    "name": "qwen-2.5:latest",
+    "size": 4368439808,
+    "modified_at": "2026-03-01T12:34:56Z"
+  },
+  {
+    "name": "dolphin-mistral:7b",
+    "size": 4109865216,
+    "modified_at": "2026-02-28T09:15:30Z"
+  },
+  {
+    "name": "llama3.2:3b",
+    "size": 2019999744,
+    "modified_at": "2026-02-25T14:22:10Z"
+  }
+]
+```
+
+**Usage:**
+```json
+{}
+```
+
+---
+
+## generate
+
+Generate a completion from an Ollama model (single-turn, no conversation history).
+
+**Use case:** One-shot text generation, classification, data extraction, or completion tasks that don't require multi-turn context.
+
+**Parameters:**
+- `prompt` (string, required): The prompt to generate from
+- `model` (string, optional): Model name (default: `qwen-2.5:latest`)
+- `system` (string, optional): System prompt to prepend
+- `temperature` (number, optional): Sampling temperature 0-2 (default 0.7)
+- `max_tokens` (number, optional): Max tokens to generate
+
+**Returns:** Generated text response.
+
+**Example 1: Simple generation**
+```json
+{
+  "prompt": "Write a short engaging caption for a beach photo",
+  "model": "dolphin-mistral:7b",
+  "temperature": 0.9
+}
+```
+
+**Response:**
+```
+Sun-kissed waves and endless summer vibes 🌊☀️ Living my best life one beach day at a time
+```
+
+**Example 2: With system prompt**
+```json
+{
+  "prompt": "Rate this content on a scale of 1-10 for engagement potential: 'Check out my new outfit'",
+  "system": "You are a social media analytics expert. Provide concise, data-driven ratings.",
+  "model": "qwen-2.5:latest",
+  "temperature": 0.3,
+  "max_tokens": 100
+}
+```
+
+**Response:**
+```
+Engagement Rating: 4/10
+
+Reasoning: Generic phrasing lacks specificity. No visual hooks, call-to-action, or personality. Recommend adding descriptive details, emoji, or question to boost interaction.
+```
+
+**Example 3: JSON extraction**
+```json
+{
+  "prompt": "Extract structured data from this text and return as JSON: 'Posted 3 hours ago, 142 likes, 28 comments, trending'",
+  "system": "Extract data into JSON format with keys: posted_time, likes, comments, status. Use null if data missing.",
+  "model": "qwen-2.5:latest",
+  "temperature": 0.1
+}
+```
+
+**Response:**
+```json
+{
+  "posted_time": "3 hours ago",
+  "likes": 142,
+  "comments": 28,
+  "status": "trending"
+}
+```
+
+---
+
+## chat
+
+Multi-turn chat with an Ollama model using a messages array. Maintains conversation context across multiple exchanges.
+
+**Use case:** Conversational AI, multi-step reasoning, context-dependent responses, or any task requiring chat history.
+
+**Parameters:**
+- `messages` (string, required): JSON string array of `{role, content}` objects
+  - Valid roles: `user`, `assistant`, `system`
+- `model` (string, optional): Model name (default: `qwen-2.5:latest`)
+- `system` (string, optional): System message to prepend to conversation
+- `temperature` (number, optional): Sampling temperature 0-2 (default 0.7)
+
+**Returns:** Assistant's message content.
+
+**Example 1: Basic conversation**
+```json
+{
+  "messages": "[{\"role\":\"user\",\"content\":\"What are the best times to post on Instagram?\"},{\"role\":\"assistant\",\"content\":\"Peak engagement times are typically 11am-1pm and 7pm-9pm on weekdays.\"},{\"role\":\"user\",\"content\":\"What about for adult content creators specifically?\"}]",
+  "model": "qwen-2.5:latest"
+}
+```
+
+**Response:**
+```
+For adult content creators, optimal posting times shift slightly:
+
+- Late evening (9pm-12am) when audience is most active
+- Weekend mornings (10am-12pm) for casual browsing
+- Avoid 3pm-5pm when users may be at work/school
+
+Consider your audience's timezone and test different schedules to find your peak engagement windows.
+```
+
+**Example 2: With system context**
+```json
+{
+  "messages": "[{\"role\":\"user\",\"content\":\"Help me draft a message to a top fan who just renewed their subscription\"}]",
+  "system": "You are Genie Helper, an AI assistant for adult content creators. Be professional, friendly, and help with fan engagement. The creator's brand voice is warm and appreciative.",
+  "model": "dolphin-mistral:7b",
+  "temperature": 0.8
+}
+```
+
+**Response:**
+```
+Hey! 💜 I just saw you renewed and I'm seriously so grateful for your support! You've been with me since the beginning and that means the world. I've got some exclusive content dropping this week that I think you're going to love 😊 Thank you for believing in me!
+```
+
+**Example 3: Multi-step reasoning**
+```json
+{
+  "messages": "[{\"role\":\"user\",\"content\":\"I want to watermark my photos\"},{\"role\":\"assistant\",\"content\":\"I can help you watermark your photos. Do you want to use your username or a custom logo?\"},{\"role\":\"user\",\"content\":\"Username, bottom right corner\"},{\"role\":\"assistant\",\"content\":\"Got it. Would you like the watermark to be subtle (semi-transparent) or prominent (solid)?\"},{\"role\":\"user\",\"content\":\"Subtle\"}]",
+  "model": "qwen-2.5:latest",
+  "temperature": 0.5
+}
+```
+
+**Response:**
+```
+Perfect! I'll apply a semi-transparent watermark with your username in the bottom right corner. This will protect your content while keeping it visually clean. Would you like me to process all images in your media library or just selected ones?
+```
+
+---
+
+## Message Format
+
+The `messages` parameter for the `chat` tool must be a JSON string containing an array of message objects:
+
+```json
+[
+  {
+    "role": "system",
+    "content": "You are a helpful assistant."
+  },
+  {
+    "role": "user",
+    "content": "Hello!"
+  },
+  {
+    "role": "assistant",
+    "content": "Hi! How can I help you today?"
+  },
+  {
+    "role": "user",
+    "content": "Tell me about your features."
+  }
+]
+```
+
+**Important:** The entire array must be stringified when passing to the tool:
+```json
+{
+  "messages": "[{\"role\":\"user\",\"content\":\"Hello!\"}]"
+}
+```
+
+---
+
+## Temperature Guide
+
+| Temperature | Use Case | Output Style |
+|-------------|----------|-------------|
+| 0.0 - 0.3 | Data extraction, classification, structured output | Deterministic, consistent, focused |
+| 0.4 - 0.7 | Balanced responses, Q&A, instructions | Natural, reliable, moderate creativity |
+| 0.8 - 1.2 | Creative writing, captions, fan messages | Varied, expressive, engaging |
+| 1.3 - 2.0 | Experimental, highly creative content | Unpredictable, very diverse |
+
+**Genie Helper defaults:**
+- Classification tasks: 0.1-0.3
+- Chat responses: 0.5-0.7
+- Content generation: 0.8-0.9
+
+---
+
+## Performance Notes
+
+**Inference speed** (CPU-only VPS):
+- Small models (3B): ~1-2s first token
+- Medium models (7B): ~2-5s first token
+- Large models (8B+): ~5-10s first token
+
+**Memory usage:**
+- 3B models: ~2GB RAM
+- 7B models: ~4.8GB RAM
+- 8B models: ~5.5GB RAM
+
+**Recommendations:**
+- Use smaller models (`llama3.2:3b`, `phi-3.5`) for quick tasks
+- Reserve larger models (`qwen-2.5`, `dolphin3`) for complex reasoning
+- Set `max_tokens` to limit generation time
+- Lower temperature for faster, more focused responses
+
+---
+
+## Error Handling
+
+Common errors and solutions:
+
+**Model not found:**
+```
+Error: model 'model-name:tag' not found
+```
+Solution: Use `list-models` to see available models or pull the model with `ollama pull model-name:tag`
+
+**Connection refused:**
+```
+Error: fetch failed (connection refused)
+```
+Solution: Ensure Ollama service is running on port 11434
+
+**Out of memory:**
+```
+Error: failed to load model
+```
+Solution: Use a smaller quantized model or free up system memory

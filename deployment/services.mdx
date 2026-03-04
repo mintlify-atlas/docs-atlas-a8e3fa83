@@ -1,0 +1,531 @@
+---
+title: Services
+description: All Genie Helper services, ports, PM2 commands, and service interactions
+---
+
+## Overview
+
+Genie Helper runs 7 services managed by PM2. This page documents each service, their ports, PM2 configuration, and how they interact.
+
+## Service Architecture
+
+```
+Browser → geniehelper.com (React SPA)
+  → /app/*          authenticated creator dashboard
+  → /api/directus/  Directus REST (port 8055) — data layer
+  → /api/llm/       AnythingLLM (port 3001)   — chat + agent + embed widget
+
+AnythingLLM Agent
+  → directus MCP   (17 tools): CRUD collections, trigger flows, manage users/files
+  → ollama MCP     (3 tools):  generate, chat, list-models
+  → stagehand MCP  (9 tools):  browser sessions, navigate, act, extract, cookies, screenshot
+  → Action Runner: [ACTION:slug:{"params"}] tag interceptor → pre-built flows
+
+Media Worker (BullMQ)
+  → scrape_profile  — Stagehand OF login + data extraction
+  → publish_post    — Stagehand-based cross-platform posting
+  → apply_watermark — ImageMagick watermarking
+  → create_teaser   — FFmpeg video preview generation
+  → post_scheduler  — polls scheduled_posts every 60s
+```
+
+## Services Table
+
+| Service | Port | PM2 Name | Purpose |
+|---------|------|----------|----------|
+| **AnythingLLM** | 3001 | `anything-llm` | Chat API, AI agent, embed widget |
+| **Directus CMS** | 8055 | `agentx-cms` | Collections, auth, REST API, data layer |
+| **Stagehand** | 3002 | `stagehand-server` | Browser automation service |
+| **Dashboard** | 3100 | `genie-dashboard` | React SPA served via `serve dashboard/dist/` |
+| **Media Worker** | — | `media-worker` | BullMQ consumer for background jobs (Redis) |
+| **Collector** | — | `anything-collector` | Document ingestion for AnythingLLM |
+| **Ollama** | 11434 | (system) | Local LLM inference engine (systemd service) |
+
+## Service Details
+
+### 1. AnythingLLM (`anything-llm`)
+
+**Port**: 3001  
+**Purpose**: Core AI agent, chat API, MCP server orchestration
+
+**Features**:
+- REST API for chat, workspaces, documents
+- WebSocket support for streaming responses
+- Embed widget hosting (`/embed/anythingllm-chat-widget.min.js`)
+- MCP server auto-boot (Directus, Ollama, Stagehand)
+- Action Runner plugin for pre-built flows
+- Custom endpoints: registration, RBAC sync, credentials, queue management
+
+**Key Files**:
+- `server/index.js` - Express entrypoint
+- `server/utils/boot/index.js` - MCP server boot logic
+- `server/utils/actionRunner/` - Action flow executor
+- `storage/` - Persistent data, documents, vector store
+
+**Dependencies**:
+- Ollama (11434) for LLM inference
+- Directus (8055) for data storage
+- Stagehand (3002) for browser automation
+
+### 2. Directus CMS (`agentx-cms`)
+
+**Port**: 8055  
+**Purpose**: Data layer, collections, authentication, REST API
+
+**Key Collections**:
+- `creator_profiles` - Platform accounts with encrypted credentials
+- `scraped_media` - Content with engagement metrics
+- `scheduled_posts` - Post queue (polled by media worker every 60s)
+- `media_jobs` - BullMQ job records
+- `hitl_sessions` - Human-in-the-loop login requests
+- `platform_sessions` - Encrypted browser cookies
+- `taxonomy_dimensions` - 6 super-concept classification system
+- `taxonomy_mapping` - 3208 classified tags
+- `fan_profiles` - Fan engagement data
+- `action_flows` - Action Runner flow definitions
+- `agent_audits` - ACTION execution logs
+
+**Authentication**:
+- JWT tokens for end-users (React SPA)
+- Static admin token for server-to-server API calls
+
+**Security**:
+- Platform credentials encrypted with AES-256-GCM
+- `encryptJSON()` / `decryptJSON()` in `server/utils/credentialsCrypto.js`
+- No encryption keys in browser - server-side only
+
+### 3. Stagehand (`stagehand-server`)
+
+**Port**: 3002  
+**Purpose**: Browser automation for platform scraping and posting
+
+**Capabilities**:
+- Headless Chrome sessions with stealth mode
+- Navigate, click, extract, screenshot
+- Cookie management (set/get)
+- Session lifecycle (start/close)
+
+**Used By**:
+- Media worker jobs (scrape, publish)
+- Stagehand MCP server (9 tools for AI agent)
+
+**Resource Usage**:
+- ~300MB RAM per active browser session
+- ~33 concurrent sessions max (with 10GB available RAM)
+
+### 4. Dashboard (`genie-dashboard`)
+
+**Port**: 3100 (if using `serve`, otherwise static files served by Nginx)  
+**Purpose**: React SPA - marketing, authentication, creator dashboard
+
+**Routes**:
+- **Public**: `/`, `/pricing`, `/about`, `/register`, `/login`
+- **Authenticated**: `/app/dashboard`, `/app/media`, `/app/calendar`, `/app/fans`, `/app/analytics`, `/app/platforms`, `/app/settings`
+- **Admin**: `/admin` (Directus + AnythingLLM iframes), `/view-as` (impersonation)
+
+**Features**:
+- AI chat widget (AnythingLLM embed) on all `/app/*` routes
+- Embed ID: `cf54a9c0-224c-469d-b97b-5dc8095eac82`
+- Directus JWT auth (auto-refresh, sessionStorage for impersonation)
+- Invite-gated registration
+- Theme switcher (ImpactGenie brand palette)
+
+**Build**:
+```bash
+cd dashboard
+npm run build
+```
+
+Output: `dashboard/dist/` served by Nginx at document root.
+
+### 5. Media Worker (`media-worker`)
+
+**Port**: None (BullMQ consumer)  
+**Purpose**: Background job processing via Redis/BullMQ
+
+**Job Types**:
+1. `scrape_profile` - Stagehand OF login + data extraction
+2. `publish_post` - Cross-platform posting via Stagehand
+3. `apply_watermark` - ImageMagick watermarking (~100ms)
+4. `create_teaser` - FFmpeg video preview (~30s CPU per clip)
+5. `post_scheduler` - Polls `scheduled_posts` collection every 60s
+
+**Configuration**:
+- Concurrency: 3 jobs (configurable via `WORKER_CONCURRENCY`)
+- Redis connection: `127.0.0.1:6379`
+- Scheduler interval: 60000ms (60s)
+
+**Resource Bottlenecks**:
+- FFmpeg clip generation: ~30s CPU per clip (real bottleneck)
+- Watermark: ~100ms (effectively zero cost)
+- Stagehand sessions: ~300MB RAM each
+
+### 6. Collector (`anything-collector`)
+
+**Port**: None  
+**Purpose**: Document ingestion for AnythingLLM vector store
+
+**Processes**:
+- Monitors `storage/documents/` for new files
+- Chunks and embeds documents
+- Updates vector store for RAG retrieval
+
+**Embedding Model**: `bge-m3:latest` (via Ollama)
+
+### 7. Ollama (System Service)
+
+**Port**: 11434  
+**Purpose**: Local LLM inference engine
+
+**Installed Models**:
+
+| Model | Role | RAM Usage |
+|-------|------|----------|
+| `dolphin3:8b-llama3.1-q4_K_M` | Orchestrator / tool planning / ACTION emission | ~4.8GB |
+| `dolphin-mistral:7b` | Uncensored content writer / captions | ~4.2GB |
+| `qwen-2.5:latest` | Primary AnythingLLM agent / code / JSON | ~4.8GB |
+| `phi-3.5:latest` | Fallback classifier | ~2.7GB |
+| `llama3.2:3b` | Lightweight summarizer | ~2.0GB |
+| `scout-fast-tag:latest` | Fast taxonomy classifier (SmolLM custom) | ~1.8GB |
+| `bge-m3:latest` | Embeddings | ~1.2GB |
+
+**Managed by**: systemd (not PM2)
+
+```bash
+# Check status
+sudo systemctl status ollama
+
+# Restart
+sudo systemctl restart ollama
+
+# View logs
+journalctl -u ollama -f
+```
+
+**Performance**:
+- CPU-only: ~33s first token for agent mode (qwen-2.5)
+- GPU recommended for production
+
+## PM2 Configuration
+
+### Starting All Services
+
+```bash
+# Navigate to project root
+cd /var/www/vhosts/geniehelper.com/agentx
+
+# Start AnythingLLM
+pm2 start server/index.js --name anything-llm
+
+# Start Directus
+pm2 start cms/server.js --name agentx-cms
+
+# Start Stagehand
+pm2 start server/stagehand.js --name stagehand-server
+
+# Start Dashboard (using serve)
+pm2 start "npx serve dashboard/dist -l 3100" --name genie-dashboard
+
+# Start Media Worker
+pm2 start media-worker/index.js --name media-worker
+
+# Start Collector
+pm2 start collector/index.js --name anything-collector
+
+# Save PM2 configuration
+pm2 save
+
+# Enable PM2 startup on boot
+pm2 startup
+sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u <your-user> --hp /home/<your-user>
+```
+
+### PM2 Ecosystem File (Recommended)
+
+Create `ecosystem.config.cjs` in project root:
+
+```javascript
+module.exports = {
+  apps: [
+    {
+      name: 'anything-llm',
+      script: 'server/index.js',
+      cwd: '/var/www/vhosts/geniehelper.com/agentx',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '2G',
+      env: {
+        NODE_ENV: 'production'
+      }
+    },
+    {
+      name: 'agentx-cms',
+      script: 'cms/cli.js',
+      args: 'start',
+      cwd: '/var/www/vhosts/geniehelper.com/agentx',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '1G'
+    },
+    {
+      name: 'stagehand-server',
+      script: 'server/stagehand.js',
+      cwd: '/var/www/vhosts/geniehelper.com/agentx',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '1G'
+    },
+    {
+      name: 'genie-dashboard',
+      script: 'serve',
+      args: 'dashboard/dist -l 3100',
+      cwd: '/var/www/vhosts/geniehelper.com/agentx',
+      instances: 1,
+      autorestart: true,
+      watch: false
+    },
+    {
+      name: 'media-worker',
+      script: 'media-worker/index.js',
+      cwd: '/var/www/vhosts/geniehelper.com/agentx',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '2G'
+    },
+    {
+      name: 'anything-collector',
+      script: 'collector/index.js',
+      cwd: '/var/www/vhosts/geniehelper.com/agentx',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '500M'
+    }
+  ]
+};
+```
+
+**Start with ecosystem file**:
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 save
+```
+
+## PM2 Commands
+
+### Status and Monitoring
+
+```bash
+# Check all services
+pm2 status
+
+# Detailed info for one service
+pm2 show anything-llm
+
+# Monitor in real-time
+pm2 monit
+
+# View logs
+pm2 logs anything-llm --lines 50
+pm2 logs media-worker --lines 50
+pm2 logs --lines 100  # All services
+
+# Stream logs
+pm2 logs anything-llm --lines 0  # Follow mode
+```
+
+### Restart and Reload
+
+```bash
+# Restart all services
+pm2 restart all
+
+# Restart specific service
+pm2 restart anything-llm
+
+# Restart multiple services
+pm2 restart anything-llm agentx-cms media-worker
+
+# Graceful reload (zero downtime)
+pm2 reload anything-llm
+```
+
+### Stop and Delete
+
+```bash
+# Stop all services
+pm2 stop all
+
+# Stop specific service
+pm2 stop media-worker
+
+# Delete service from PM2
+pm2 delete genie-dashboard
+
+# Delete all and clear PM2 list
+pm2 delete all
+```
+
+### Flush Logs
+
+```bash
+# Clear all logs
+pm2 flush
+
+# Clear logs for specific service
+pm2 flush anything-llm
+```
+
+## Service Interactions
+
+### Data Flow
+
+1. **User → Dashboard** (React SPA)
+   - User interacts with UI at `geniehelper.com/app/*`
+   - Dashboard makes API calls to `/api/directus/` and `/api/llm/`
+
+2. **Dashboard → Directus** (via Nginx proxy)
+   - CRUD operations on collections
+   - JWT authentication
+   - File uploads
+
+3. **Dashboard → AnythingLLM** (via Nginx proxy)
+   - Chat messages via embed widget
+   - Streaming responses (SSE)
+   - Document management
+
+4. **AnythingLLM → MCP Servers**
+   - Directus MCP: 17 tools (CRUD, flows, users, files)
+   - Ollama MCP: 3 tools (generate, chat, list-models)
+   - Stagehand MCP: 9 tools (browser sessions, navigation, extraction)
+
+5. **AnythingLLM → Ollama**
+   - LLM inference requests
+   - Embeddings generation
+   - Model selection based on task
+
+6. **Media Worker → Directus**
+   - Poll `scheduled_posts` every 60s
+   - Read `media_jobs` for processing
+   - Update job status and results
+
+7. **Media Worker → Stagehand**
+   - Create browser sessions
+   - Navigate to platforms
+   - Extract data or publish content
+
+8. **Media Worker → ImageMagick/FFmpeg**
+   - Apply watermarks (ImageMagick)
+   - Generate video teasers (FFmpeg)
+
+### Authentication Flow
+
+1. User registers via `/register` (React route)
+2. Dashboard calls `/api/llm/api/register` (server-side proxy)
+3. AnythingLLM creates Directus user via `DIRECTUS_ADMIN_TOKEN`
+4. User logs in via Directus JWT
+5. JWT stored in localStorage, sent with all API requests
+6. RBAC sync webhook keeps AnythingLLM users in sync with Directus roles
+
+### Platform Scraping Flow
+
+1. User connects platform via `/app/platforms`
+2. Browser extension or manual cookie upload
+3. Encrypted cookies stored in `platform_sessions`
+4. User clicks "Scrape Profile" button
+5. Dashboard creates `media_jobs` record
+6. Media worker picks up job from BullMQ
+7. Worker decrypts credentials, starts Stagehand session
+8. Stagehand navigates, extracts data
+9. Worker stores results in `scraped_media`
+10. Dashboard polls job status, updates UI
+
+## Troubleshooting
+
+### Service Won't Start
+
+```bash
+# Check logs for errors
+pm2 logs <service-name> --err --lines 100
+
+# Check if port is in use
+sudo netstat -tulpn | grep <port>
+
+# Kill process on port
+sudo kill -9 $(lsof -t -i:<port>)
+
+# Restart service
+pm2 restart <service-name>
+```
+
+### Memory Issues
+
+```bash
+# Check memory usage
+pm2 status  # See memory column
+free -h  # System memory
+
+# Restart high-memory service
+pm2 restart anything-llm
+
+# Adjust max_memory_restart in ecosystem.config.cjs
+```
+
+### MCP Servers Not Loading
+
+```bash
+# Check MCP config
+cat storage/plugins/anythingllm_mcp_servers.json
+
+# Check AnythingLLM boot logs
+pm2 logs anything-llm --lines 200 | grep MCP
+
+# Restart AnythingLLM
+pm2 restart anything-llm
+```
+
+### BullMQ Jobs Stuck
+
+```bash
+# Check Redis connection
+redis-cli ping
+
+# Check media worker logs
+pm2 logs media-worker --lines 100
+
+# Check job queue via API
+curl http://localhost:3001/api/queue/stats
+
+# Restart media worker
+pm2 restart media-worker
+```
+
+## Quick Reference
+
+```bash
+# Check all services
+pm2 status
+
+# Restart everything
+pm2 restart all
+
+# Rebuild dashboard after code changes
+cd dashboard && npm run build
+
+# Restart AnythingLLM after server changes
+pm2 restart anything-llm
+
+# View logs
+pm2 logs anything-llm --lines 50
+pm2 logs media-worker --lines 50
+```
+
+## Next Steps
+
+- [Configure Nginx reverse proxy](/deployment/nginx)
+- [Monitor and optimize performance](/deployment/monitoring) (coming soon)

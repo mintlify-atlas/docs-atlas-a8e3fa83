@@ -1,0 +1,493 @@
+---
+title: 'Captions API'
+description: 'AI-powered social media caption generation using Ollama'
+---
+
+## Overview
+
+The Captions API generates platform-optimized social media captions using the **dolphin-mistral:7b** model via Ollama. The model is specifically chosen for uncensored, creator-style content writing.
+
+**Base Path:** `/api/captions`
+
+**Key Features:**
+- Platform-specific style guides (OnlyFans, Fansly, X, Instagram, TikTok, etc.)
+- Tone customization (playful, professional, teasing, etc.)
+- Length control (short, medium, long)
+- Creator username personalization
+
+---
+
+## POST /api/captions/generate
+
+Generate a social media caption using AI.
+
+**Authentication:** Directus JWT (Bearer token)
+
+### Request Parameters
+
+<ParamField body="platform" type="string" default="onlyfans">
+  Target platform for the caption. Determines style guide and formatting.
+  
+  **Supported values:**
+  - `onlyfans` - Intimate, teasing, personal (1-3 sentences, emojis OK)
+  - `fansly` - Flirty, direct, confident (encourages subscription)
+  - `x` - Punchy, under 280 chars, hook + value
+  - `reddit` - Genuine, community-aware, conversational
+  - `tiktok` - Energetic, with hashtags, max 150 chars
+  - `instagram` - Visually descriptive, lifestyle tone, 3-5 hashtags
+  - `youtube` - Keyword-rich, first 2 lines as hook, timestamps
+  - `snapchat` - Very short, playful, max 30 chars
+</ParamField>
+
+<ParamField body="tone" type="string" default="playful">
+  Caption tone/voice. Examples: `playful`, `professional`, `teasing`, `motivational`, `casual`, `confident`
+</ParamField>
+
+<ParamField body="topic" type="string" default="new content drop">
+  Main topic or theme for the caption. Examples:
+  - `new photo set`
+  - `behind the scenes`
+  - `workout motivation`
+  - `product announcement`
+  - `Q&A session`
+</ParamField>
+
+<ParamField body="length" type="string" default="medium">
+  Desired caption length.
+  
+  **Options:**
+  - `short` - 1-2 sentences, punchy
+  - `medium` - 2-4 sentences, balanced detail
+  - `long` - 4-8 sentences, detailed and engaging
+</ParamField>
+
+<ParamField body="platform_username" type="string">
+  Creator's username on the platform (optional). Used to personalize the caption.
+</ParamField>
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  Request success status
+</ResponseField>
+
+<ResponseField name="caption" type="string">
+  Generated caption text (trimmed, ready to post)
+</ResponseField>
+
+<ResponseField name="model" type="string">
+  AI model used for generation (e.g., `dolphin-mistral:7b`)
+</ResponseField>
+
+<ResponseField name="platform" type="string">
+  Platform identifier (echoed from request)
+</ResponseField>
+
+### Example Request
+
+**OnlyFans Caption:**
+
+```bash
+curl -X POST http://localhost:3001/api/captions/generate \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "platform": "onlyfans",
+    "tone": "playful",
+    "topic": "new lingerie photo set",
+    "length": "medium",
+    "platform_username": "fitcreator99"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "caption": "Just dropped a new set that's been driving me wild all week 🔥 You know you wanna see what I've been hiding... link in bio babe 💋",
+  "model": "dolphin-mistral:7b",
+  "platform": "onlyfans"
+}
+```
+
+**Instagram Caption:**
+
+```bash
+curl -X POST http://localhost:3001/api/captions/generate \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "platform": "instagram",
+    "tone": "motivational",
+    "topic": "morning workout routine",
+    "length": "long"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "caption": "Starting the day strong with my favorite 30-minute HIIT circuit 💪 No excuses, just results. If you're struggling to stay consistent, remember: progress over perfection. Every rep counts, every day matters. Who else is getting after it this morning? Drop a 🔥 if you crushed your workout today! #FitnessMotivation #MorningWorkout #HIITTraining #ProgressNotPerfection #FitFam",
+  "model": "dolphin-mistral:7b",
+  "platform": "instagram"
+}
+```
+
+**X (Twitter) Post:**
+
+```bash
+curl -X POST http://localhost:3001/api/captions/generate \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "platform": "x",
+    "tone": "confident",
+    "topic": "content strategy tips",
+    "length": "short"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "caption": "Most creators fail because they post randomly. Winners batch content, analyze metrics, and double down on what works. Simple, not easy.",
+  "model": "dolphin-mistral:7b",
+  "platform": "x"
+}
+```
+
+---
+
+## Platform Style Guides
+
+The API uses platform-specific system prompts (from `captions.js:18`):
+
+<AccordionGroup>
+  <Accordion title="OnlyFans">
+    **Style:** Intimate, teasing, personal
+    
+    **Format:** 1-3 short sentences
+    
+    **Guidelines:**
+    - Emojis encouraged
+    - No external links (platform restriction)
+    - Direct, conversational tone
+    - Encourage engagement/DMs
+  </Accordion>
+
+  <Accordion title="Fansly">
+    **Style:** Flirty, direct, confident
+    
+    **Format:** 1-3 sentences
+    
+    **Guidelines:**
+    - Encourage subscription/tips
+    - Bold, unapologetic tone
+    - Call-to-action focused
+  </Accordion>
+
+  <Accordion title="X (Twitter)">
+    **Style:** Punchy, under 280 chars
+    
+    **Format:** Hook + value
+    
+    **Guidelines:**
+    - No fluff, direct value
+    - Thread-starter friendly
+    - High engagement potential
+  </Accordion>
+
+  <Accordion title="Instagram">
+    **Style:** Visually descriptive, lifestyle tone
+    
+    **Format:** 3-5 hashtags at end
+    
+    **Guidelines:**
+    - First line is hook (visible in feed)
+    - Storytelling encouraged
+    - Hashtags for discoverability
+  </Accordion>
+
+  <Accordion title="TikTok">
+    **Style:** Energetic, hashtag-rich
+    
+    **Format:** Max 150 chars for caption
+    
+    **Guidelines:**
+    - Trending hashtags prioritized
+    - CTA for watch/like/follow
+    - Match video energy
+  </Accordion>
+
+  <Accordion title="YouTube">
+    **Style:** Keyword-rich, SEO-optimized
+    
+    **Format:** First 2 lines as hook, timestamps if relevant
+    
+    **Guidelines:**
+    - First 2 lines visible before "Show More"
+    - Include chapters/timestamps
+    - CTA to subscribe
+  </Accordion>
+
+  <Accordion title="Reddit">
+    **Style:** Genuine, community-aware, conversational
+    
+    **Format:** Natural, un-salesy
+    
+    **Guidelines:**
+    - Match subreddit culture
+    - No overt self-promotion
+    - Value-first approach
+  </Accordion>
+
+  <Accordion title="Snapchat">
+    **Style:** Very short, playful
+    
+    **Format:** Max 30 chars
+    
+    **Guidelines:**
+    - Complements visual story
+    - Emoji-heavy acceptable
+    - Casual, spontaneous
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Model Configuration
+
+The caption generation uses Ollama's `/api/generate` endpoint with optimized settings:
+
+**From `captions.js:88`:**
+
+```javascript
+const ollamaRes = await fetch(`${OLLAMA_URL}/api/generate`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    model: CAPTION_MODEL, // dolphin-mistral:7b
+    system: systemPrompt,
+    prompt: userPrompt,
+    stream: false,
+    options: { 
+      temperature: 0.85,  // High creativity
+      top_p: 0.9,         // Diverse token sampling
+      num_predict: 300    // Max 300 tokens output
+    },
+  }),
+});
+```
+
+### Why dolphin-mistral:7b?
+
+- **Uncensored:** No content filters (critical for adult creator use cases)
+- **Fast inference:** 7B parameter model runs on CPU in less than 2 seconds
+- **Style matching:** Fine-tuned for conversational, creative writing
+- **Consistency:** Reliable output structure (no meta-commentary)
+
+### Environment Configuration
+
+```bash
+# .env
+OLLAMA_URL=http://127.0.0.1:11434
+CAPTION_MODEL=dolphin-mistral:7b
+```
+
+---
+
+## Error Handling
+
+**Unauthorized (no token):**
+
+```json
+{
+  "ok": false,
+  "error": "Authorization header required"
+}
+```
+
+**Invalid/expired token:**
+
+```json
+{
+  "ok": false,
+  "error": "Invalid or expired token"
+}
+```
+
+**Ollama service unavailable:**
+
+```json
+{
+  "ok": false,
+  "error": "Ollama error: connect ECONNREFUSED 127.0.0.1:11434"
+}
+```
+
+**Empty model response:**
+
+```json
+{
+  "ok": false,
+  "error": "Model returned empty response"
+}
+```
+
+---
+
+## Best Practices
+
+### Caption Quality Tips
+
+1. **Be specific with topics:** Instead of "new content", use "new yoga tutorial series"
+2. **Match tone to platform:** `playful` works for OnlyFans, `professional` for LinkedIn
+3. **Iterate on length:** Start with `medium`, adjust based on platform engagement
+4. **Test multiple generations:** Run 3-5 variations, pick the best
+
+### Integration Patterns
+
+**Client-side caching:**
+
+```javascript
+// Cache generated captions to avoid duplicate API calls
+const cacheKey = `${platform}:${tone}:${topic}:${length}`;
+const cached = localStorage.getItem(cacheKey);
+
+if (cached) {
+  return JSON.parse(cached);
+}
+
+const res = await fetch('/api/captions/generate', { ... });
+const data = await res.json();
+
+localStorage.setItem(cacheKey, JSON.stringify(data));
+return data;
+```
+
+**Batch generation:**
+
+```javascript
+// Generate captions for multiple platforms in parallel
+const platforms = ['instagram', 'tiktok', 'x'];
+const topic = 'new workout program launch';
+
+const captions = await Promise.all(
+  platforms.map(platform =>
+    fetch('http://localhost:3001/api/captions/generate', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ platform, topic, tone: 'motivational', length: 'medium' }),
+    }).then(r => r.json())
+  )
+);
+
+console.log(captions);
+// [
+//   { ok: true, caption: "...", platform: "instagram" },
+//   { ok: true, caption: "...", platform: "tiktok" },
+//   { ok: true, caption: "...", platform: "x" }
+// ]
+```
+
+---
+
+## Performance
+
+**Typical response times:**
+
+- CPU inference (dolphin-mistral:7b): 1.5-3s
+- GPU inference (if available): 0.3-0.8s
+- Network overhead: Less than 100ms
+
+**Optimization tips:**
+
+1. **Pre-warm Ollama:** Run a dummy generation on server start to load model into memory
+2. **Use GPU:** Set `OLLAMA_GPU_LAYERS=-1` for full GPU offload
+3. **Adjust `num_predict`:** Reduce to 150 for shorter captions (faster generation)
+4. **Connection pooling:** Reuse HTTP connections to Ollama
+
+---
+
+## Example Use Cases
+
+### Content Calendar Automation
+
+Generate a week's worth of captions for a creator:
+
+```javascript
+const topics = [
+  'Monday motivation workout',
+  'New recipe video',
+  'Behind the scenes photo shoot',
+  'Q&A session announcement',
+  'Weekend sale promo',
+];
+
+const captions = await Promise.all(
+  topics.map(topic =>
+    generateCaption({
+      platform: 'instagram',
+      tone: 'casual',
+      topic,
+      length: 'medium',
+    })
+  )
+);
+
+// Save to content calendar database
+for (let i = 0; i < captions.length; i++) {
+  await saveScheduledPost({
+    platform: 'instagram',
+    caption: captions[i].caption,
+    scheduled_for: addDays(new Date(), i),
+  });
+}
+```
+
+### A/B Testing Captions
+
+Generate variations for split testing:
+
+```javascript
+const tones = ['playful', 'confident', 'teasing'];
+const variations = await Promise.all(
+  tones.map(tone =>
+    generateCaption({
+      platform: 'onlyfans',
+      tone,
+      topic: 'new exclusive content drop',
+      length: 'short',
+    })
+  )
+);
+
+// Show variations to creator for selection
+console.log(variations.map(v => v.caption));
+// [
+//   "Just dropped something spicy 🌶️ Come see what I've been working on...",
+//   "New exclusive content is live. You know you want it. 😏",
+//   "Wanna see what I'm hiding? Check your DMs... 💋"
+// ]
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Queue API" icon="layer-group" href="/api/queue">
+    Enqueue caption generation as a background job
+  </Card>
+  <Card title="Genie Chat" icon="robot" href="/api/genie-chat">
+    Use AI agent for interactive caption brainstorming
+  </Card>
+</CardGroup>

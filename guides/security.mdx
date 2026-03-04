@@ -1,0 +1,311 @@
+---
+title: Security
+description: Credential encryption, environment variables, and security best practices
+---
+
+## Overview
+
+Genie Helper handles sensitive platform credentials and user data with multiple layers of security, including server-side AES-256-GCM encryption, secure session management, and strict environment variable handling.
+
+## Credential Encryption
+
+All platform credentials (OnlyFans, Fansly, etc.) are encrypted server-side before storage in Directus.
+
+### Encryption Method: AES-256-GCM
+
+- **Algorithm**: AES-256-GCM (Galois/Counter Mode)
+- **Key size**: 256 bits (32 bytes)
+- **Authentication**: Built-in AEAD (Authenticated Encryption with Associated Data)
+- **Implementation**: `server/utils/credentialsCrypto.js`
+
+### Encryption Format
+
+```javascript
+// Encrypted credential structure
+{
+  "enc": "v1:iv:tag:ciphertext"
+}
+```
+
+**Format breakdown**:
+- `v1`: Version identifier for format migration
+- `iv`: Initialization vector (hex encoded)
+- `tag`: Authentication tag (hex encoded)
+- `ciphertext`: Encrypted credential data (hex encoded)
+
+### Encryption Functions
+
+```javascript
+import { encryptJSON, decryptJSON } from './credentialsCrypto.js';
+
+// Encrypt platform credentials
+const encrypted = encryptJSON({ username: 'user', password: 'pass' });
+// Returns: { enc: "v1:abc123...:def456...:ghi789..." }
+
+// Decrypt credentials
+const decrypted = decryptJSON(encrypted);
+// Returns: { username: 'user', password: 'pass' }
+```
+
+### Legacy Format Support
+
+`decryptJSON()` handles both:
+- **New format**: `{ enc: "v1:iv:tag:ciphertext" }` (object)
+- **Legacy format**: `"v1:iv:tag:ciphertext"` (raw string)
+
+This ensures backward compatibility during migration.
+
+## Environment Variables
+
+<Warning>
+  Never commit these to version control
+</Warning>
+
+### Required Security Variables
+
+```bash
+# Credential Encryption
+CREDENTIALS_ENC_KEY_B64=<base64-encoded-32-bytes>
+
+# Directus Admin Access
+DIRECTUS_ADMIN_TOKEN=<your-admin-token>
+
+# RBAC Webhook Security
+RBAC_SYNC_WEBHOOK_SECRET=<webhook-secret>
+
+# Session Security
+SESSION_SECRET=<random-string>
+
+# iframe Security (Production)
+IFRAME_PARENT_ORIGIN=https://geniehelper.com
+CONTENT_SECURITY_POLICY_DIRECTIVES__FRAME_ANCESTORS=https://geniehelper.com
+```
+
+### Generate Encryption Key
+
+```bash
+# Generate 32 random bytes and encode as base64
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Set the output as `CREDENTIALS_ENC_KEY_B64` in your environment.
+
+## Security Architecture
+
+### No Client-Side Encryption
+
+<Info>
+  All encryption happens server-side. Encryption keys never touch the browser.
+</Info>
+
+**Why**:
+- Browser environments are fundamentally insecure for key storage
+- JavaScript can be inspected and manipulated
+- Server-side encryption ensures key material stays protected
+
+### Credential Storage Flow
+
+```
+User submits credentials (HTTPS)
+  ↓
+API endpoint receives plain credentials
+  ↓
+encryptJSON() encrypts with AES-256-GCM
+  ↓
+Encrypted object stored in Directus
+  ↓
+Decryption only happens in server memory when needed
+  ↓
+Decrypted credentials passed directly to Stagehand
+  ↓
+Never sent back to browser
+```
+
+### Browser Cookie Security
+
+The browser extension captures platform cookies, but these are encrypted before storage:
+
+1. **Extension captures cookies**: From authenticated browser session
+2. **Sent to server**: Via HTTPS POST to `/api/credentials/cookies`
+3. **Server encrypts**: Using `encryptJSON(cookiesArray)`
+4. **Stored encrypted**: In `platform_sessions.encrypted_cookies`
+5. **Decrypted only for Stagehand**: When browser automation needs them
+
+## Password Policies
+
+<Warning>
+  Password policy is currently disabled for development. Re-enable before production.
+</Warning>
+
+### Recommended Production Policy
+
+```bash
+curl -X PATCH http://localhost:8055/api/settings \
+  -H "Authorization: Bearer $DIRECTUS_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "auth_password_policy": "/(?=^.{8,}$)(?=.*\\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!@#$%^&*()_+}{';'?>.<,])(?!.*\\s).*$/"
+  }'
+```
+
+**Requirements**:
+- Minimum 8 characters
+- At least one digit
+- At least one lowercase letter
+- At least one uppercase letter
+- At least one special character
+- No whitespace
+
+## Session Management
+
+### JWT Token Security
+
+- **Storage**: `localStorage` for normal sessions, `sessionStorage` for impersonation
+- **Auto-refresh**: Tokens refreshed before expiration
+- **Logout cleanup**: Tokens cleared on explicit logout
+- **Impersonation isolation**: Separate storage prevents token collision
+
+### Session Endpoints
+
+```javascript
+// Login
+POST /api/directus/auth/login
+{
+  "email": "user@example.com",
+  "password": "password"
+}
+// Returns: { access_token, refresh_token, expires }
+
+// Refresh token
+POST /api/directus/auth/refresh
+{
+  "refresh_token": "..."
+}
+
+// Logout
+POST /api/directus/auth/logout
+```
+
+## iframe Security (Production)
+
+<Warning>
+  Configure these before launch to prevent clickjacking
+</Warning>
+
+### AnythingLLM iframe
+
+```bash
+IFRAME_PARENT_ORIGIN=https://geniehelper.com
+```
+
+Allows embedding AnythingLLM interface in admin panel at `geniehelper.com/admin`.
+
+### Directus iframe
+
+```bash
+CONTENT_SECURITY_POLICY_DIRECTIVES__FRAME_ANCESTORS=https://geniehelper.com
+```
+
+Allows embedding Directus admin in admin panel iframe.
+
+## Security Best Practices
+
+### Before Production Launch
+
+<Steps>
+  <Step title="Change default passwords">
+    Update credentials for admin@geniehelper.com and poweradmin@geniehelper.com
+  </Step>
+  <Step title="Enable password policy">
+    Apply the recommended regex policy via Directus settings API
+  </Step>
+  <Step title="Rotate encryption key">
+    Generate new `CREDENTIALS_ENC_KEY_B64` for production environment
+  </Step>
+  <Step title="Configure iframe origins">
+    Set `IFRAME_PARENT_ORIGIN` and `CONTENT_SECURITY_POLICY_DIRECTIVES__FRAME_ANCESTORS`
+  </Step>
+  <Step title="Secure webhook secrets">
+    Rotate `RBAC_SYNC_WEBHOOK_SECRET` to production value
+  </Step>
+  <Step title="Review API key">
+    Rotate the hardcoded API key `38KEHYS-NVPMBSX-GVVJNYH-VQHAN9S`
+  </Step>
+</Steps>
+
+### Ongoing Security
+
+- **Audit logs**: Review `agent_audits` collection for suspicious activity
+- **Session monitoring**: Track unusual login patterns
+- **Credential rotation**: Encourage users to rotate platform credentials regularly
+- **Update dependencies**: Address Dependabot vulnerabilities (108 currently open)
+- **HTTPS only**: Never run production over HTTP
+- **Rate limiting**: Implement on authentication endpoints
+
+## CSAM Risk Mitigation
+
+<Warning>
+  Video operations are blocked on Starter tier to mitigate CSAM risk
+</Warning>
+
+### Why Video is Blocked on Free Tier
+
+1. **CSAM liability**: Free tiers attract bad actors
+2. **Bandwidth cost**: Video processing is expensive
+3. **Storage overhead**: Video files consume significant disk space
+4. **Processing cost**: FFmpeg operations are CPU-intensive
+
+### Video Access Control
+
+```javascript
+// Tier limits enforce video blocking
+"starter": {
+  "ai_clip_ops": 0,       // No clip generation
+  "thumbnail_ops": 0      // No frame extraction
+}
+
+// Video enabled at Creator tier ($49/mo)
+"creator": {
+  "ai_clip_ops": 10,      // Limited clips
+  "thumbnail_ops": -1     // Unlimited thumbnails
+}
+```
+
+## Vulnerability Management
+
+<Info>
+  Current status: 108 Dependabot vulnerabilities (3 critical, 59 high)
+</Info>
+
+### Address Before Production
+
+```bash
+# Check current vulnerabilities
+npm audit
+
+# Auto-fix non-breaking updates
+npm audit fix
+
+# Review and fix breaking changes
+npm audit fix --force
+```
+
+Prioritize:
+- **Critical**: Immediate fix required
+- **High**: Fix before launch
+- **Medium/Low**: Address during hardening phase
+
+## Related Files
+
+- **Encryption**: `server/utils/credentialsCrypto.js`
+- **Credentials API**: `server/endpoints/api/credentials.js`
+- **RBAC sync**: `server/endpoints/api/rbacSync.js`
+- **Session management**: `server/endpoints/api/impersonate.js`
+- **Frontend crypto**: `dashboard/src/utils/crypto.js` (deprecated, server-side only now)
+
+## Security Contacts
+
+For security issues:
+- **DO NOT** open public GitHub issues
+- Contact server administrator directly
+- Include: severity, reproduction steps, potential impact

@@ -1,0 +1,231 @@
+---
+title: "Dashboard"
+description: "React SPA dashboard with routes, features, and AI agent embed widget"
+---
+
+## Overview
+
+The Genie Helper dashboard is a React 18 SPA built with Vite, Tailwind CSS, and React Router v6. It provides the main interface for creators to manage their platforms, content, and AI operations.
+
+**Source**: `dashboard/` directory  
+**Doc root**: `dashboard/dist/` served at `geniehelper.com/`
+
+## Architecture
+
+### Routes
+
+#### Public Routes
+- `/` — Home page
+- `/pricing` — Plan comparison
+- `/about` — About the platform
+- `/register` — User registration (invite-gated)
+- `/login` — Email + password authentication
+
+#### Authenticated Routes (under `/app/*`)
+- `/app/dashboard` — Main dashboard with stats and quick actions
+- `/app/media` — Media library with upload, crop, compress, watermark
+- `/app/calendar` — Post scheduling and content calendar
+- `/app/fans` — Fan engagement and insights
+- `/app/analytics` — Performance metrics and growth tracking
+- `/app/platforms` — Platform connections and cookie management
+- `/app/settings` — Profile and brand customization
+
+#### Admin Routes
+- `/admin` — Directus + AnythingLLM iframes (admin-only)
+- `/view-as` — User impersonation for support
+
+**Implementation**: All routes defined in `dashboard/src/App.jsx:34-82`
+
+<CodeGroup>
+
+```jsx dashboard/src/App.jsx
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider } from '@/contexts/AuthContext';
+import AppLayout from '@/components/Layout/AppLayout';
+
+// Protected app routes wrapped in AppLayout
+<Route path="/app" element={<AppLayout />}>
+  <Route index element={<Navigate to="/app/dashboard" replace />} />
+  <Route path="dashboard" element={<Dashboard />} />
+  <Route path="media" element={<MediaLibrary />} />
+  <Route path="calendar" element={<ContentCalendar />} />
+  <Route path="fans" element={<FanInsights />} />
+  <Route path="analytics" element={<Analytics />} />
+  <Route path="platforms" element={<PlatformConnect />} />
+  <Route path="settings" element={<Settings />} />
+</Route>
+```
+
+</CodeGroup>
+
+## API Integration
+
+The dashboard communicates with backend services through two proxied endpoints:
+
+### API Proxies
+- `/api/directus/` → `:8055` — Directus REST API (data layer)
+- `/api/llm/` → `:3001` — AnythingLLM (chat + agent + MCP tools)
+
+**Client**: `dashboard/src/utils/api.js` exports Axios instances:
+- `creators` — Platform connections API
+- `media` — File upload and metadata
+- `posts` — Scheduled posts CRUD
+- `queue` — BullMQ job dispatch
+- `platformSessions` — Encrypted cookie storage
+- `collections` — Generic Directus collections reader
+
+<CodeGroup>
+
+```javascript dashboard/src/utils/api.js
+import axios from 'axios';
+
+const directusBase = '/api/directus';
+const llmBase = '/api/llm';
+
+export const creators = {
+  list: (params) => axios.get(`${directusBase}/items/platform_connections`, { params }),
+  update: (id, data) => axios.patch(`${directusBase}/items/platform_connections/${id}`, data),
+};
+
+export const media = {
+  list: (params) => axios.get(`${directusBase}/items/scraped_media`, { params }),
+  upload: (file) => { /* FormData upload to /files */ },
+};
+```
+
+</CodeGroup>
+
+## Authentication
+
+**Method**: Directus JWT with auto-refresh  
+**Storage**: `localStorage` for persistent sessions, `sessionStorage` for impersonation tabs  
+**Flow**: Login → `/api/directus/auth/login` → Store token → Redirect to `/app/dashboard`
+
+**Registration**: Invite-gated via Alpha invite code validated against AnythingLLM invite API
+
+## AI Agent Widget
+
+The dashboard includes a **floating AI chat widget** on all `/app/*` routes with full MCP tool access.
+
+### Features
+- **28 MCP tools**: Directus CRUD, Ollama models, Stagehand browser automation
+- **Workspace agent mode**: Connected to `administrator` workspace
+- **SSE streaming**: Real-time tool call rendering
+- **Session isolation**: Per-user conversation history
+
+### Embed Configuration
+
+**Component**: `dashboard/src/components/AgentWidget/index.jsx`  
+**Endpoint**: `/api/llm/api/genie/stream-chat` (proxied to AnythingLLM workspace API)
+
+<Note>
+The embed widget uses the workspace stream-chat API (not the public embed API) because the embed mode doesn't support MCP tool calling. The API key is kept server-side.
+</Note>
+
+### Opening the Chat Programmatically
+
+Other components can trigger the chat widget:
+
+<CodeGroup>
+
+```javascript Example: Auto-open chat from Dashboard
+// dashboard/src/pages/Dashboard/index.jsx
+window.__genieOpenChat("I'm logged in — Let's go");
+
+// Or with options:
+window.__genieOpenChat({
+  message: "Scrape my OnlyFans profile",
+  autoSend: true
+});
+```
+
+</CodeGroup>
+
+**Implementation**: `dashboard/src/components/AgentWidget/index.jsx:99-108`
+
+## Theming & Branding
+
+The dashboard supports per-user theme customization stored in `user_personas.brand_*` fields.
+
+**Component**: `dashboard/src/components/Brand/ThemeApplier.jsx`  
+**Colors**: CSS custom properties injected on mount
+
+### Default Theme ("Deep Space Cinema")
+
+| Variable | Color | Usage |
+|----------|-------|-------|
+| `--genie-light` | `#DBEAFE` | Highlights, secondary buttons |
+| `--brand-purple` | `#401F6B` | Primary accent, gradients |
+| `--brand-deep` | `#1A0B2E` | Deep shadows, container backgrounds |
+| `--accent-blue` | `#0069A8` | Gradient mid-tones |
+
+**Typography**: Epilogue (Sans-serif), weights 300–900
+
+## File Structure
+
+```
+dashboard/
+├── src/
+│   ├── pages/          # Route pages
+│   │   ├── Dashboard/index.jsx
+│   │   ├── MediaLibrary/index.jsx
+│   │   ├── ContentCalendar/index.jsx
+│   │   ├── Analytics/index.jsx
+│   │   ├── PlatformConnect/index.jsx
+│   │   └── Settings/index.jsx
+│   ├── components/
+│   │   ├── Layout/
+│   │   │   ├── AppLayout.jsx       # Main app wrapper + AgentWidget
+│   │   │   ├── Sidebar.jsx         # Navigation sidebar
+│   │   │   └── PublicLayout.jsx    # Marketing pages wrapper
+│   │   ├── AgentWidget/index.jsx   # AI chat popup
+│   │   ├── Brand/ThemeApplier.jsx  # CSS custom properties
+│   │   └── UpgradeGate/index.jsx   # Feature tier gating
+│   ├── utils/
+│   │   ├── api.js                  # Directus + LLM API clients
+│   │   └── crypto.js               # AES-256-GCM credential encryption
+│   ├── contexts/
+│   │   └── AuthContext.jsx         # Auth state provider
+│   ├── App.jsx                     # Routes definition
+│   └── main.jsx                    # React 18 entrypoint
+└── dist/                           # Build output (served by nginx)
+```
+
+## Admin Credentials
+
+<Note>
+These credentials are for development/alpha only. Change before public launch.
+</Note>
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Dashboard | `geniehelper.com/app/` | Any registered creator account |
+| Admin panel | `geniehelper.com/admin` | admin@geniehelper.com |
+| Directus | localhost:8055/admin | admin@geniehelper.com / password |
+| AnythingLLM | localhost:3001 | poweradmin@geniehelper.com / (MY)P@$$w3rd |
+
+## Development
+
+<CodeGroup>
+
+```bash Rebuild after code changes
+cd dashboard
+npm run build
+
+# Dashboard is served by nginx from dashboard/dist/
+# No pm2 restart needed — static files
+```
+
+```bash Dev server (local development)
+cd dashboard
+npm run dev
+# Opens on localhost:5173
+```
+
+</CodeGroup>
+
+## Related
+
+- [Media Processing](/features/media-processing) — Media worker operations
+- [AI Agent](/features/ai-agent) — AnythingLLM MCP tools
+- [Platform Scraping](/features/platform-scraping) — Stagehand automation

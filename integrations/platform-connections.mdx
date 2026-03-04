@@ -1,0 +1,625 @@
+---
+title: Platform Connections
+description: Connecting creator platforms, managing credentials, and secure credential storage
+---
+
+## Overview
+
+**Platform Connections** enable Genie Helper to authenticate with creator platforms for scraping stats and publishing content. Credentials are encrypted with **AES-256-GCM** and stored in the Directus `creator_profiles` collection.
+
+**Supported Platforms**:
+
+- OnlyFans
+- Fansly
+- Pornhub
+- XVideos
+- Instagram
+- TikTok
+- X (Twitter)
+- Reddit
+- YouTube
+
+## Connection Methods
+
+### 1. Cookie Capture (Recommended)
+
+**Flow**:
+
+1. User logs into platform via browser
+2. GenieHelper browser extension captures session cookies
+3. Cookies encrypted and stored in `platform_sessions` collection
+4. Stagehand injects cookies to bypass login screens
+
+**Advantages**:
+
+- No credential storage required
+- Works with 2FA/SSO platforms
+- Session reuse reduces bot detection risk
+- No password exposure
+
+**See**: [Browser Extension](/integrations/browser-extension) for setup.
+
+### 2. Username/Password (Legacy)
+
+**Flow**:
+
+1. User enters credentials in dashboard `/app/platforms`
+2. Credentials encrypted with AES-256-GCM
+3. Stored in `creator_profiles.credentials` field
+4. Stagehand uses credentials for automated login
+
+**Disadvantages**:
+
+- Fails on platforms with 2FA
+- Requires password exposure
+- Higher bot detection risk
+- Manual login automation brittle
+
+**When to Use**:
+
+- Platforms without 2FA
+- Initial setup before cookie capture
+- Fallback if cookies expire
+
+### 3. OAuth (Planned)
+
+**Roadmap**: Phase 9E
+
+**Supported Platforms**:
+
+- Google (YouTube)
+- X (Twitter)
+
+**Flow**:
+
+1. User clicks "Connect with OAuth" in dashboard
+2. Redirected to platform OAuth consent screen
+3. Platform issues access token + refresh token
+4. Tokens encrypted and stored in `creator_profiles.credentials`
+5. Dashboard polls for OAuth callback
+
+**Status**: Not implemented (see README TODO section).
+
+## Credential Storage
+
+### Creator Profiles Collection
+
+**Collection**: `creator_profiles`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `user_id` | M2O (directus_users) | Creator who owns this connection |
+| `platform` | String | Platform identifier (e.g., "onlyfans") |
+| `username` | String | Platform username (plaintext) |
+| `credentials` | JSON | Encrypted credential object |
+| `scrape_enabled` | Boolean | Enable automated scraping |
+| `scrape_frequency` | String | Cron expression (e.g., "0 */6 * * *") |
+| `last_scraped_at` | Timestamp | Last successful scrape |
+| `scrape_status` | String | `idle`, `running`, `success`, `error` |
+| `profile_data` | JSON | Cached stats (followers, earnings) |
+
+### Credentials Field Format
+
+**Unencrypted Payload** (before encryption):
+
+```json
+{
+  "type": "password",
+  "username": "creator123",
+  "password": "mySecretPassword"
+}
+```
+
+**Encrypted Storage** (in Directus):
+
+```json
+{
+  "enc": "v1:k8sQn2FpL...iv_base64:xR9pL...tag_base64:mZ3cV...ciphertext_base64"
+}
+```
+
+**Envelope Format**: `v1:<iv_b64>:<tag_b64>:<ciphertext_b64>`
+
+### Platform Sessions Collection
+
+**Collection**: `platform_sessions`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `creator_profile_id` | M2O | Link to creator profile |
+| `platform` | String | Platform name (e.g., "onlyfans") |
+| `cookies` | JSON | Encrypted cookie array |
+| `user_agent` | String | Browser user agent |
+| `captured_at` | Timestamp | Cookie capture time |
+| `expires_at` | Timestamp | Estimated expiration (90 days) |
+| `last_used_at` | Timestamp | Last Stagehand injection |
+
+**Cookie Format** (before encryption):
+
+```json
+[
+  {
+    "name": "session_id",
+    "value": "abc123...",
+    "domain": ".onlyfans.com",
+    "path": "/",
+    "secure": true,
+    "httpOnly": true,
+    "sameSite": "Lax",
+    "expirationDate": 1735689600
+  }
+]
+```
+
+## Encryption Implementation
+
+### AES-256-GCM
+
+Genie Helper uses **AES-256-GCM** (Galois/Counter Mode) for authenticated encryption:
+
+**Security Properties**:
+
+- **Confidentiality**: Credentials unreadable without key
+- **Integrity**: Tampered ciphertext rejected during decryption
+- **Authentication**: Additional Authenticated Data (AAD) prevents context swapping
+
+**Key Material**:
+
+- **Encryption Key**: 32 bytes (256 bits)
+- **IV (Initialization Vector)**: 12 bytes (96 bits), random per encryption
+- **Auth Tag**: 16 bytes (128 bits), generated during encryption
+- **AAD**: "agentx-v1" (fixed context string)
+
+### Encryption Module
+
+**Location**: `/home/daytona/workspace/source/server/utils/credentialsCrypto.js:1`
+
+**Functions**:
+
+- `encryptJSON(obj)`: Encrypts object → returns envelope
+- `decryptJSON(envelope)`: Decrypts envelope → returns object
+
+**Environment Variables**:
+
+```bash
+CREDENTIALS_ENC_KEY_B64=<base64-encoded-32-bytes>
+CREDENTIALS_ENC_AAD="agentx-v1"  # Optional, defaults to agentx-v1
+```
+
+### Encryption Process
+
+**`encryptJSON(obj)` Flow**:
+
+```javascript
+const crypto = require("crypto");
+
+function encryptJSON(obj) {
+  // 1. Load 32-byte key from env
+  const key = Buffer.from(process.env.CREDENTIALS_ENC_KEY_B64, "base64");
+  
+  // 2. Generate random 12-byte IV
+  const iv = crypto.randomBytes(12);
+  
+  // 3. Create cipher
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  
+  // 4. Set AAD (prevents envelope reuse in wrong context)
+  cipher.setAAD(Buffer.from("agentx-v1", "utf8"));
+  
+  // 5. Encrypt JSON-stringified object
+  const plaintext = Buffer.from(JSON.stringify(obj), "utf8");
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  
+  // 6. Get authentication tag
+  const tag = cipher.getAuthTag();
+  
+  // 7. Return envelope (Directus JSON-safe)
+  return {
+    enc: `v1:${iv.toString("base64")}:${tag.toString("base64")}:${ciphertext.toString("base64")}`
+  };
+}
+```
+
+### Decryption Process
+
+**`decryptJSON(envelope)` Flow**:
+
+```javascript
+function decryptJSON(envelope) {
+  const key = Buffer.from(process.env.CREDENTIALS_ENC_KEY_B64, "base64");
+  
+  // 1. Extract envelope string (handles both {enc:"v1:..."} and raw "v1:...")
+  const s = typeof envelope === "object" ? envelope.enc : envelope;
+  const [version, ivB64, tagB64, ctB64] = s.split(":");
+  
+  if (version !== "v1") throw new Error("Invalid credential envelope version");
+  
+  // 2. Decode base64 components
+  const iv = Buffer.from(ivB64, "base64");
+  const tag = Buffer.from(tagB64, "base64");
+  const ciphertext = Buffer.from(ctB64, "base64");
+  
+  // 3. Create decipher
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAAD(Buffer.from("agentx-v1", "utf8"));
+  decipher.setAuthTag(tag);
+  
+  // 4. Decrypt
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  
+  // 5. Parse JSON
+  return JSON.parse(plaintext.toString("utf8"));
+}
+```
+
+### Key Generation
+
+To generate a new encryption key:
+
+```bash
+# Generate 32 random bytes and encode as base64
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+
+# Example output:
+# k8sQn2FpLxR9pLmZ3cVa1bN4dE5fG6hI7jK8lM9nO0p=
+```
+
+**Add to `.env`**:
+
+```bash
+CREDENTIALS_ENC_KEY_B64="k8sQn2FpLxR9pLmZ3cVa1bN4dE5fG6hI7jK8lM9nO0p="
+```
+
+**CRITICAL**: Store this key securely. Loss of key = permanent credential loss.
+
+## Dashboard Integration
+
+### Connecting a Platform
+
+**Page**: `/app/platforms`
+
+**Flow**:
+
+1. User clicks "Add Platform"
+2. Selects platform from dropdown
+3. Enters username + password (or clicks "Capture Cookies")
+4. Dashboard calls `/api/credentials/store-platform-credentials`
+5. Server encrypts credentials via `encryptJSON()`
+6. Inserts `creator_profiles` record with encrypted `credentials` field
+7. Dashboard shows success + scrape configuration options
+
+**Frontend Code** (`dashboard/src/pages/PlatformConnect/index.jsx`):
+
+```javascript
+import { platformConnections } from '../../utils/api';
+
+const handleConnect = async (platform, username, password) => {
+  const response = await platformConnections.store({
+    platform,
+    username,
+    credentials: { type: "password", username, password }
+  });
+  
+  if (response.data.success) {
+    alert(`Connected to ${platform}`);
+  }
+};
+```
+
+### Credentials API
+
+**Endpoint**: `/api/credentials/store-platform-credentials`
+
+**Location**: `/home/daytona/workspace/source/server/endpoints/api/credentials.js:1`
+
+**Request**:
+
+```json
+{
+  "platform": "onlyfans",
+  "username": "creator123",
+  "credentials": {
+    "type": "password",
+    "username": "creator123",
+    "password": "mySecretPassword"
+  }
+}
+```
+
+**Response**:
+
+```json
+{
+  "success": true,
+  "creator_profile_id": "a3f8c2b1-..."
+}
+```
+
+**Server Implementation**:
+
+```javascript
+const { encryptJSON } = require('../utils/credentialsCrypto');
+
+router.post('/store-platform-credentials', async (req, res) => {
+  const { platform, username, credentials } = req.body;
+  const userId = req.user.id; // From Directus JWT
+  
+  // Encrypt credentials
+  const encrypted = encryptJSON(credentials);
+  
+  // Insert into Directus
+  const result = await directusApi.post('/items/creator_profiles', {
+    user_id: userId,
+    platform,
+    username,
+    credentials: encrypted,
+    scrape_enabled: false
+  });
+  
+  res.json({ success: true, creator_profile_id: result.data.data.id });
+});
+```
+
+## Scraping Configuration
+
+### Enabling Auto-Scrape
+
+After connecting a platform, configure automated scraping:
+
+**Dashboard UI**:
+
+- **Scrape Enabled**: Toggle to enable/disable
+- **Frequency**: Cron expression or preset (every 6 hours, daily, etc.)
+- **Last Scraped**: Timestamp of last successful scrape
+- **Status**: `idle`, `running`, `success`, `error`
+
+**PATCH Request**:
+
+```javascript
+await directusApi.patch(`/items/creator_profiles/${profileId}`, {
+  scrape_enabled: true,
+  scrape_frequency: "0 */6 * * *" // Every 6 hours
+});
+```
+
+### Cron Expressions
+
+**Common Patterns**:
+
+| Expression | Meaning |
+|------------|----------|
+| `0 */6 * * *` | Every 6 hours |
+| `0 0 * * *` | Daily at midnight |
+| `0 */12 * * *` | Every 12 hours |
+| `0 0 * * 0` | Weekly on Sunday |
+| `0 0 1 * *` | Monthly on 1st |
+
+**Scheduler**: The `post_scheduler` worker (media-worker) polls `creator_profiles` for enabled scrapes.
+
+**Implementation** (`media-worker/index.js`):
+
+```javascript
+setInterval(async () => {
+  const profiles = await directusApi.get('/items/creator_profiles', {
+    params: {
+      filter: { scrape_enabled: { _eq: true } },
+      fields: ['id', 'platform', 'scrape_frequency', 'last_scraped_at']
+    }
+  });
+  
+  for (const profile of profiles.data.data) {
+    const shouldScrape = cronMatch(profile.scrape_frequency, new Date());
+    
+    if (shouldScrape) {
+      await scrapeQueue.add('scrape_profile', {
+        creator_profile_id: profile.id,
+        platform: profile.platform
+      });
+    }
+  }
+}, 60000); // Check every 60 seconds
+```
+
+## Manual Scraping
+
+### Trigger from Dashboard
+
+**Button**: "Scrape Now" on `/app/dashboard`
+
+**Flow**:
+
+1. User clicks "Scrape Now"
+2. Dashboard checks for valid `platform_sessions` record
+3. If no cookies: creates `hitl_sessions` record → shows yellow banner
+4. If cookies exist: enqueues `scrape_profile` job via `/api/queue/enqueue`
+5. Dashboard polls `media_jobs` collection for job status
+6. On completion: shows scraped media count + updates `creator_profiles.last_scraped_at`
+
+**Frontend Code**:
+
+```javascript
+import { queue } from '../../utils/api';
+
+const handleScrapeNow = async (profileId, platform) => {
+  // 1. Check for cookies
+  const sessions = await directusApi.get('/items/platform_sessions', {
+    params: {
+      filter: {
+        creator_profile_id: { _eq: profileId },
+        platform: { _eq: platform }
+      },
+      limit: 1
+    }
+  });
+  
+  if (sessions.data.data.length === 0) {
+    // No cookies: create HITL session
+    await directusApi.post('/items/hitl_sessions', {
+      creator_profile_id: profileId,
+      platform,
+      status: 'pending'
+    });
+    
+    alert('Please log in via browser extension first');
+    return;
+  }
+  
+  // 2. Enqueue scrape job
+  const job = await queue.enqueue('scrape-jobs', 'scrape_profile', {
+    creator_profile_id: profileId,
+    platform
+  });
+  
+  // 3. Poll for completion
+  const jobId = job.data.media_job_id;
+  const interval = setInterval(async () => {
+    const jobStatus = await directusApi.get(`/items/media_jobs/${jobId}`);
+    
+    if (jobStatus.data.data.status === 'completed') {
+      clearInterval(interval);
+      alert('Scrape complete!');
+      window.location.reload();
+    }
+  }, 2000);
+};
+```
+
+## Security Best Practices
+
+### Key Rotation
+
+To rotate the encryption key:
+
+1. **Generate New Key**:
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+   ```
+
+2. **Re-encrypt All Credentials**:
+   ```javascript
+   const profiles = await directusApi.get('/items/creator_profiles');
+   
+   for (const profile of profiles.data.data) {
+     // Decrypt with old key
+     const oldCreds = decryptJSON(profile.credentials);
+     
+     // Update env with new key
+     process.env.CREDENTIALS_ENC_KEY_B64 = NEW_KEY;
+     
+     // Re-encrypt
+     const newCreds = encryptJSON(oldCreds);
+     
+     // Update record
+     await directusApi.patch(`/items/creator_profiles/${profile.id}`, {
+       credentials: newCreds
+     });
+   }
+   ```
+
+3. **Update `.env` on Server**
+
+4. **Restart Services**:
+   ```bash
+   pm2 restart all
+   ```
+
+### Backup & Recovery
+
+**Backup Encryption Key**:
+
+1. Store `CREDENTIALS_ENC_KEY_B64` in password manager
+2. Add to encrypted `.env.backup` file
+3. Store in separate location from server
+
+**Recovery**:
+
+If key is lost:
+
+- All encrypted credentials are **permanently unrecoverable**
+- Users must re-connect all platforms
+- No decryption method exists without original key
+
+### Access Control
+
+**Environment Permissions**:
+
+```bash
+# .env file should be readable only by server user
+chmod 600 /path/to/agentx/.env
+chown agentx:agentx /path/to/agentx/.env
+```
+
+**Directus Permissions**:
+
+- `creator_profiles.credentials`: **Never** expose via API to frontend
+- Dashboard should only display connection status, never raw credentials
+- Admin role can view encrypted envelope (but not decrypt without key)
+
+**Server-Side Only**:
+
+- Encryption/decryption **always** happens server-side
+- Browser extension POSTs cookies to server (server encrypts)
+- Dashboard never receives decrypted credentials
+
+## Troubleshooting
+
+### "Invalid Credential Envelope" Error
+
+**Cause**: Encryption key mismatch or corrupted data.
+
+**Fix**:
+
+1. Verify `CREDENTIALS_ENC_KEY_B64` matches key used during encryption
+2. Check envelope format starts with `v1:`
+3. Test decryption manually:
+   ```javascript
+   const { decryptJSON } = require('./server/utils/credentialsCrypto');
+   const envelope = { enc: "v1:..." };
+   console.log(decryptJSON(envelope));
+   ```
+
+### Scrape Job Stuck in "Running"
+
+**Cause**: Stagehand session crashed or hung.
+
+**Fix**:
+
+1. Check Stagehand logs: `pm2 logs stagehand-server`
+2. Restart Stagehand: `pm2 restart stagehand-server`
+3. Manually update job status:
+   ```javascript
+   await directusApi.patch(`/items/media_jobs/${jobId}`, {
+     status: 'failed',
+     error: 'Session timeout'
+   });
+   ```
+
+### "No Cookies Found" During Scrape
+
+**Cause**: `platform_sessions` record missing or expired.
+
+**Fix**:
+
+1. Check `platform_sessions` collection for matching `creator_profile_id` + `platform`
+2. If missing: create HITL session (dashboard does this automatically)
+3. If expired: re-capture cookies via browser extension
+4. Verify cookie `expires_at` is in the future
+
+### Platform Login Fails with Cookies
+
+**Cause**: Cookies expired, platform session invalidated, or IP change.
+
+**Fix**:
+
+1. Log into platform manually in browser
+2. Re-capture cookies via extension
+3. Trigger scrape again
+4. If still fails: platform may have changed auth mechanism (check for OAuth migration)
+
+## Related Documentation
+
+- [Browser Extension](/integrations/browser-extension) - Cookie capture workflow
+- [Stagehand Automation](/integrations/stagehand) - Cookie injection and scraping
+- [Directus CMS](/integrations/directus-cms) - `creator_profiles` and `platform_sessions` collections

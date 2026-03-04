@@ -1,0 +1,241 @@
+---
+title: Action Runner
+description: Flow-based execution system that intercepts [ACTION:slug:{params}] tags from the AI agent and runs pre-built automation workflows
+---
+
+The Action Runner plugin intercepts special `[ACTION:slug:{"params"}]` tags emitted by the LLM in chat responses, strips them from the visible message, executes the corresponding flow, and streams status updates back to the user.
+
+## Why Action Runner?
+
+**Problem**: Qwen-2.5 (and many uncensored models) struggle with reliable tool calling in AnythingLLM's agent mode. Function calls often fail, get malformed, or hallucinate parameters.
+
+**Solution**: Instead of relying on native tool calling, the model emits structured text tags that trigger pre-built flows. The Action Runner plugin intercepts these tags, validates parameters, and executes multi-step workflows using a declarative JSON format.
+
+---
+
+## How It Works
+
+### 1. Model Emission
+
+The model outputs a special tag in its prose:
+
+```
+I'll analyze that URL for you.
+
+[ACTION:scout-analyze:{"url":"https://example.com"}]
+
+Let me know if you need anything else.
+```
+
+### 2. Interception
+
+The action-runner plugin:
+- Detects the `[ACTION:slug:{params}]` pattern
+- Strips it from the visible chat response
+- Parses the slug and JSON parameters
+- Looks up the flow definition in `action_flows` collection
+
+### 3. Execution
+
+The plugin executes the flow's steps sequentially:
+- Each step is one of 14 available step types
+- Steps can use variables from previous steps via `{{step_name.field}}`
+- Execution status is streamed back to the chat UI
+- Results are logged to `agent_audits` (success/error/miss)
+
+### 4. Logging
+
+Every ACTION execution is logged to the `agent_audits` collection:
+- `success`: Flow completed without errors
+- `error`: Flow failed (with error message)
+- `miss`: Slug not found in `action_flows`
+
+---
+
+## Available Actions
+
+| Slug | Purpose | Typical Use Case |
+|------|---------|------------------|
+| `scout-analyze` | Scrape URL + AI analysis | "Analyze this creator's OnlyFans profile" |
+| `taxonomy-tag` | Auto-classify content with 6-concept taxonomy | "Tag this image with relevant categories" |
+| `post-create` | Draft platform-specific social post | "Write a caption for this photo" |
+| `message-generate` | Fan engagement message | "Draft a reply to this fan's DM" |
+| `memory-recall` | Search stored data + summarize | "What were my best-performing posts last month?" |
+| `media-process` | Queue media job (watermark, teaser, compress) | "Watermark all photos in this upload" |
+
+---
+
+## Flow Definition Format
+
+Flows are stored in the `action_flows` Directus collection with this structure:
+
+```json
+{
+  "slug": "scout-analyze",
+  "name": "Scout & Analyze URL",
+  "description": "Scrape a URL and run AI analysis",
+  "steps": [
+    {
+      "type": "stagehand",
+      "name": "scrape",
+      "action": "extract",
+      "params": {
+        "url": "{{params.url}}",
+        "instruction": "Extract all text content and metadata"
+      }
+    },
+    {
+      "type": "ollama",
+      "name": "analyze",
+      "model": "qwen-2.5:latest",
+      "prompt": "Analyze this content: {{scrape.content}}"
+    },
+    {
+      "type": "directus",
+      "name": "save",
+      "operation": "create-item",
+      "collection": "scout_reports",
+      "data": {
+        "url": "{{params.url}}",
+        "analysis": "{{analyze.response}}"
+      }
+    }
+  ]
+}
+```
+
+---
+
+## Step Types
+
+The Action Runner supports 14 step types:
+
+### MCP Tool Steps
+
+| Type | Description |
+|------|-------------|
+| `directus` | Execute any Directus MCP tool (17 tools available) |
+| `ollama` | Execute Ollama generate/chat (3 tools available) |
+| `stagehand` | Execute Stagehand browser action (9 tools available) |
+
+### Utility Steps
+
+| Type | Description |
+|------|-------------|
+| `http` | Make HTTP request (GET/POST/PATCH/DELETE) |
+| `transform` | Transform data with JSONPath or template |
+| `condition` | Conditional branching (if/else) |
+| `loop` | Iterate over arrays |
+| `delay` | Wait for specified milliseconds |
+| `parallel` | Execute multiple steps concurrently |
+| `error` | Throw an error (for validation) |
+| `log` | Log message to console |
+| `return` | Return early from flow with value |
+| `script` | Execute custom JavaScript (sandboxed) |
+| `wait-for` | Poll a condition until true or timeout |
+
+---
+
+## Variable Interpolation
+
+Steps can reference variables from:
+- `{{params.fieldName}}` — Input parameters from the ACTION tag
+- `{{stepName.field}}` — Output from previous steps
+- `{{env.VARIABLE}}` — Environment variables
+- `{{user.id}}` — Current user context
+
+**Example**:
+```json
+{
+  "type": "directus",
+  "name": "create_job",
+  "operation": "create-item",
+  "collection": "media_jobs",
+  "data": {
+    "user_id": "{{user.id}}",
+    "operation": "{{params.operation}}",
+    "media_id": "{{params.media_id}}"
+  }
+}
+```
+
+---
+
+## System Prompt Integration
+
+The GENIE_SYSTEM_PROMPT includes instructions for emitting ACTION tags:
+
+```
+When the user requests an operation, you can trigger it by outputting:
+
+[ACTION:slug:{"param1":"value1","param2":"value2"}]
+
+Available actions:
+- scout-analyze: {"url": "https://..."}
+- taxonomy-tag: {"media_id": "uuid"}
+- post-create: {"media_id": "uuid", "platform": "onlyfans"}
+- message-generate: {"fan_id": "uuid", "context": "..."}
+- memory-recall: {"query": "..."}
+- media-process: {"operation": "watermark", "media_id": "uuid"}
+
+The tag will be hidden from the user. Mention the action in your prose.
+```
+
+---
+
+## Error Handling
+
+### Flow Not Found
+If the slug doesn't exist in `action_flows`, the runner logs a `miss` to `agent_audits` and returns an error message to the chat.
+
+### Step Failure
+If a step throws an error:
+- Execution halts immediately
+- Error is logged to `agent_audits` with full stack trace
+- User sees a friendly error message in chat
+
+### Tier Limits
+If a step triggers a tier-gated operation (e.g. `create-item` on `media_jobs`), the Directus MCP server checks quotas and throws a `tier_limit:` error that propagates to the user.
+
+---
+
+## Implementation Details
+
+### Plugin Location
+`server/utils/actionRunner/`
+
+### Key Files
+- `index.js` — Main plugin entrypoint and tag interceptor
+- `executor.js` — Flow step executor
+- `steps/` — Individual step type implementations
+
+### Integration Points
+- **Chat stream**: Intercepts SSE stream from AnythingLLM
+- **Agent audits**: Logs every execution to Directus
+- **MCP servers**: Reuses existing MCP tool connections
+
+---
+
+## Compared to Native Tool Calling
+
+| Aspect | Native Tool Calling | Action Runner |
+|--------|---------------------|---------------|
+| Model requirements | Reliable function calling support | Any model that can output text tags |
+| Flexibility | Single-step tool execution | Multi-step workflows with variables |
+| Error recovery | Limited retry logic | Custom error handling per step |
+| Observability | Basic logging | Full audit trail in Directus |
+| Tier gating | Manual implementation | Built into Directus MCP tools |
+| Complexity | Simple, fast | More complex, slower (multi-step) |
+
+**When to use Action Runner**: Complex workflows, unreliable tool-calling models, need for audit trails
+
+**When to use native tools**: Simple single-step operations, models with good function calling (GPT-4, Claude)
+
+---
+
+## Related
+
+- [MCP Servers](/ai/mcp-servers) — The 29 tools available in flow steps
+- [Ollama Models](/ai/ollama-models) — Models that emit ACTION tags
+- **Collection**: `action_flows` — Flow definitions (slug → steps JSON)
+- **Collection**: `agent_audits` — Execution logs (success/error/miss)

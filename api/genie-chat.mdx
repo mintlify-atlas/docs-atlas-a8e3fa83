@@ -1,0 +1,597 @@
+---
+title: 'Genie Chat API'
+description: 'AI agent streaming chat with MCP tool integration (SSE)'
+---
+
+## Overview
+
+The Genie Chat API provides a Server-Sent Events (SSE) streaming interface to the AnythingLLM workspace agent. Unlike the embed API, this proxies to the full **workspace agent mode** with access to all 28 MCP tools (Directus, Ollama, Stagehand browser automation).
+
+**Base Path:** `/api/genie`
+
+**Key Features:**
+- Real-time streaming responses (SSE)
+- Full MCP tool integration (Directus queries, browser automation, etc.)
+- Onboarding gate enforcement (content generation blocked until setup complete)
+- Automatic persona context injection from user's RAG node graph
+- Session-based conversation history
+
+---
+
+## POST /api/genie/stream-chat
+
+Stream AI agent responses using AnythingLLM workspace API.
+
+**Authentication:** Directus JWT (Bearer token)
+
+### Request Parameters
+
+<ParamField body="message" type="string" required>
+  User's message/prompt to the AI agent. Can include:
+  - Content generation requests ("Write an Instagram caption about...")
+  - Questions ("What are my top performing posts?")
+  - Commands ("Schedule a post for tomorrow at 9am")
+</ParamField>
+
+<ParamField body="sessionId" type="string">
+  Optional session identifier for conversation continuity. If omitted, defaults to `genie-{userId}` for user-specific history.
+</ParamField>
+
+### Response Format (SSE Stream)
+
+The endpoint returns a **Server-Sent Events** stream with `Content-Type: text/event-stream`.
+
+**Event Structure:**
+
+```
+data: {"type":"textResponseChunk","textResponse":"Here ","close":false,"error":false}
+data: {"type":"textResponseChunk","textResponse":"is ","close":false,"error":false}
+data: {"type":"textResponseChunk","textResponse":"your ","close":false,"error":false}
+data: {"type":"textResponseChunk","textResponse":"caption...","close":true,"error":false}
+```
+
+**Event Types:**
+
+<ResponseField name="type" type="string">
+  Event type:
+  - `textResponseChunk` - Incremental text chunk
+  - `toolCall` - MCP tool invocation notification
+  - `error` - Error occurred
+</ResponseField>
+
+<ResponseField name="textResponse" type="string">
+  Text content (for `textResponseChunk` events)
+</ResponseField>
+
+<ResponseField name="close" type="boolean">
+  `true` if this is the final event in the stream
+</ResponseField>
+
+<ResponseField name="error" type="boolean">
+  `true` if an error occurred
+</ResponseField>
+
+### Example Request (curl)
+
+```bash
+curl -X POST http://localhost:3001/api/genie/stream-chat \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -N \
+  -d '{
+    "message": "Write a flirty OnlyFans caption for a beach photoshoot",
+    "sessionId": "session-123"
+  }'
+```
+
+**Response (SSE Stream):**
+
+```
+data: {"type":"textResponseChunk","textResponse":"Sun-kissed ","close":false,"error":false}
+
+data: {"type":"textResponseChunk","textResponse":"and salty 🌊 ","close":false,"error":false}
+
+data: {"type":"textResponseChunk","textResponse":"Just posted ","close":false,"error":false}
+
+data: {"type":"textResponseChunk","textResponse":"my hottest ","close":false,"error":false}
+
+data: {"type":"textResponseChunk","textResponse":"beach set yet. ","close":false,"error":false}
+
+data: {"type":"textResponseChunk","textResponse":"Link in bio, babe 💋","close":true,"error":false}
+
+```
+
+### Example Request (JavaScript Fetch)
+
+```javascript
+const response = await fetch('http://localhost:3001/api/genie/stream-chat', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${directusToken}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    message: 'Generate 3 Instagram caption ideas for my new workout video',
+    sessionId: 'user-workout-planning',
+  }),
+});
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  
+  const chunk = decoder.decode(value);
+  const lines = chunk.split('\n\n');
+  
+  for (const line of lines) {
+    if (line.startsWith('data: ')) {
+      const data = JSON.parse(line.slice(6));
+      
+      if (data.type === 'textResponseChunk') {
+        console.log(data.textResponse);
+        
+        if (data.close) {
+          console.log('Stream complete');
+        }
+      }
+    }
+  }
+}
+```
+
+### Example Request (EventSource - Browser)
+
+<Warning>
+`EventSource` does not support POST requests or custom headers. Use `fetch` with streaming reader instead.
+</Warning>
+
+For GET-compatible SSE endpoints, use:
+
+```javascript
+const eventSource = new EventSource(
+  `http://localhost:3001/api/genie/stream-chat?token=${directusToken}&message=${encodeURIComponent(message)}`
+);
+
+eventSource.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log(data.textResponse);
+  
+  if (data.close) {
+    eventSource.close();
+  }
+};
+```
+
+---
+
+## Onboarding Gate
+
+The endpoint enforces an **onboarding completion gate** before allowing content generation:
+
+**From `genieChat.js:50`:**
+
+```javascript
+const { unlocked, state } = await getOnboardingState(user.id);
+if (!unlocked) {
+  const phase = state?.phase || "EXTENSION_INSTALL";
+  const sourcesIngested = state?.data_sources_ingested || 0;
+  const required = state?.data_sources_required || 2;
+  
+  const gateMessage = phase === "PROCESSING"
+    ? `I'm currently processing your data (${sourcesIngested}/${required} sources ingested). Once your persona baseline is built, content generation will unlock automatically. Check back in a few minutes.`
+    : `Before I can generate content for you, I need to learn how you operate. Let's complete your onboarding first — head to the **Setup** tab to get started. Once you've connected your platform and shared your content data, I'll be fully calibrated to your voice.`;
+  
+  // Return gate message as SSE stream
+  res.write(`data: ${JSON.stringify({ type: "textResponse", textResponse: gateMessage, close: true, error: false })}\n\n`);
+  return res.end();
+}
+```
+
+**Gate Response (Before Onboarding):**
+
+```
+data: {"type":"textResponse","textResponse":"Before I can generate content for you, I need to learn how you operate. Let's complete your onboarding first — head to the **Setup** tab to get started. Once you've connected your platform and shared your content data, I'll be fully calibrated to your voice.","close":true,"error":false}
+
+```
+
+**Gate Response (Processing Data):**
+
+```
+data: {"type":"textResponse","textResponse":"I'm currently processing your data (1/2 sources ingested). Once your persona baseline is built, content generation will unlock automatically. Check back in a few minutes.","close":true,"error":false}
+
+```
+
+---
+
+## Persona Context Injection
+
+The API automatically enriches user messages with **persona node context** from the taxonomy graph:
+
+**From `genieChat.js:68`:**
+
+```javascript
+const nodeContext = await getNodeContext(user.id);
+const enrichedMessage = nodeContext
+  ? `${nodeContext}\n\n---\n\n${message}`
+  : message;
+```
+
+**Example Enriched Message:**
+
+```
+<persona_context>
+User Profile: Fitness creator focusing on HIIT workouts and meal prep
+Top Content Themes: workout tutorials, transformation stories, nutrition tips
+Tone: Motivational, energetic, authentic
+Platforms: Instagram (primary), TikTok (secondary), YouTube (long-form)
+</persona_context>
+
+---
+
+Write a caption for my new HIIT workout video
+```
+
+This context helps the AI agent generate **on-brand, personalized content** matching the creator's established voice.
+
+---
+
+## Session Management
+
+Conversations are session-isolated to maintain context across multiple turns:
+
+**Default Session ID:**
+
+```javascript
+const chatSession = sessionId || `genie-${user.id}`;
+```
+
+**Use Cases:**
+
+1. **User-wide session:** Omit `sessionId` for a single persistent conversation per user
+2. **Project-specific sessions:** Use custom IDs like `campaign-summer-2026` for isolated planning contexts
+3. **Ephemeral sessions:** Generate random IDs for one-off requests without history pollution
+
+**Session Example:**
+
+```javascript
+// Turn 1
+await streamChat({
+  message: "I'm planning a new workout program launch",
+  sessionId: "program-launch-planning"
+});
+// Response: "Great! What's the program focus?"
+
+// Turn 2 (same session - agent remembers context)
+await streamChat({
+  message: "It's a 30-day core strength challenge",
+  sessionId: "program-launch-planning"
+});
+// Response: "Perfect! For a 30-day core challenge, I'd suggest..."
+```
+
+---
+
+## MCP Tool Integration
+
+The agent has access to 28 MCP tools via the AnythingLLM workspace:
+
+**Available Tool Categories:**
+
+<AccordionGroup>
+  <Accordion title="Directus Tools (Data CRUD)">
+    - `directus_query_items` - Read from any Directus collection
+    - `directus_create_item` - Create records
+    - `directus_update_item` - Update records
+    - `directus_delete_item` - Delete records
+    
+    **Example Use:** "What are my top 5 most engaged Instagram posts from last month?"
+  </Accordion>
+
+  <Accordion title="Ollama Tools (AI Generation)">
+    - `ollama_generate` - Text generation with any local model
+    - `ollama_chat` - Multi-turn chat completions
+    
+    **Example Use:** "Generate 10 caption variations for this topic"
+  </Accordion>
+
+  <Accordion title="Stagehand Tools (Browser Automation)">
+    - `stagehand_navigate` - Navigate to URL
+    - `stagehand_extract` - Extract page data
+    - `stagehand_click` - Click elements
+    - `stagehand_type` - Input text
+    
+    **Example Use:** "Check my Instagram analytics and summarize engagement trends"
+  </Accordion>
+
+  <Accordion title="Platform APIs">
+    - `instagram_get_insights` - Fetch Instagram analytics
+    - `tiktok_get_videos` - List TikTok videos
+    - `youtube_get_analytics` - YouTube channel stats
+    
+    **Example Use:** "Which of my YouTube videos has the best retention rate?"
+  </Accordion>
+</AccordionGroup>
+
+**Tool Call Event Example:**
+
+```
+data: {"type":"toolCall","tool":"directus_query_items","status":"started","args":{"collection":"social_posts","filter":{"platform":"instagram"}}}
+
+data: {"type":"toolCall","tool":"directus_query_items","status":"completed","result":{"count":142}}
+
+data: {"type":"textResponseChunk","textResponse":"You have 142 Instagram posts. ","close":false,"error":false}
+
+```
+
+---
+
+## Error Handling
+
+**Unauthorized (no token):**
+
+```json
+{
+  "error": "Unauthorized"
+}
+```
+
+**Invalid/expired token:**
+
+```json
+{
+  "error": "Invalid or expired token"
+}
+```
+
+**Missing message:**
+
+```json
+{
+  "error": "message required"
+}
+```
+
+**Upstream AnythingLLM error:**
+
+```json
+{
+  "error": "Upstream error: workspace not found"
+}
+```
+
+**SSE Stream Error Event:**
+
+```
+data: {"type":"error","error":"Model timeout after 30s","close":true,"error":true}
+
+```
+
+---
+
+## Admin Endpoint: Taxonomy Rebuild
+
+### POST /api/genie/taxonomy/rebuild-graph
+
+Apply human-reviewed taxonomy assignments to the knowledge graph and re-upload to AnythingLLM RAG.
+
+**Authentication:** Directus JWT (admin users only)
+
+**Authorization Check:**
+
+```javascript
+const meRes = await fetch(
+  `${DIRECTUS_URL}/users/me?fields=admin_access,role.name`,
+  { headers: { Authorization: `Bearer ${token}` } }
+);
+const isAdmin =
+  me?.data?.admin_access === true ||
+  me?.data?.role?.name === "Administrator";
+if (!isAdmin) {
+  return res.status(403).json({ error: "Admin only" });
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "message": "Rebuild started"
+}
+```
+
+The rebuild runs asynchronously:
+
+1. Fetches all `taxonomy_review_queue` items with `status=assigned`
+2. Adds `MAPS_TO_CONCEPT` edges to `taxonomy_graph.json`
+3. Saves updated graph
+4. Re-uploads RAG document to AnythingLLM (persona context)
+
+**Use Case:**
+
+After human reviewers assign content nodes to taxonomy concepts in the admin UI:
+
+```bash
+curl -X POST http://localhost:3001/api/genie/taxonomy/rebuild-graph \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+Logs:
+```
+[taxonomy] Rebuild done: +47 edges, 1894 total
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# .env
+DIRECTUS_URL=http://127.0.0.1:8055
+LLM_URL=http://127.0.0.1:3001  # AnythingLLM base URL
+ANYTHINGLLM_API_KEY=38KEHYS-NVPMBSX-GVVJNYH-VQHAN9S
+AGENT_WORKSPACE_SLUG=administrator  # Workspace with agent mode enabled
+```
+
+### Workspace Configuration
+
+Ensure the target workspace has:
+
+1. **Agent mode enabled** (not chat/query mode)
+2. **MCP servers configured** (Directus, Ollama, Stagehand)
+3. **System prompt tuned** for creator content generation
+4. **RAG documents loaded** (persona nodes, taxonomy graph)
+
+---
+
+## Performance Considerations
+
+**Streaming Latency:**
+
+- First token: 300-800ms (model warm-up + context processing)
+- Token throughput: 20-50 tokens/sec (depends on model size)
+- Network overhead: Negligible with HTTP/2 + keep-alive
+
+**Connection Timeouts:**
+
+SSE streams can stay open indefinitely. Set client-side timeouts:
+
+```javascript
+const controller = new AbortController();
+const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+const response = await fetch('/api/genie/stream-chat', {
+  method: 'POST',
+  headers: { ... },
+  body: JSON.stringify({ message }),
+  signal: controller.signal,
+});
+
+clearTimeout(timeoutId);
+```
+
+**Nginx Buffering:**
+
+Disable buffering for SSE endpoints:
+
+```nginx
+location /api/genie/stream-chat {
+  proxy_pass http://localhost:3001;
+  proxy_buffering off;
+  proxy_cache off;
+  proxy_set_header X-Accel-Buffering no;
+}
+```
+
+The API already sets `X-Accel-Buffering: no` header (line 102).
+
+---
+
+## React Integration Example
+
+```jsx
+import { useState } from 'react';
+
+function GenieChat({ directusToken }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [streaming, setStreaming] = useState(false);
+
+  const sendMessage = async () => {
+    if (!input.trim()) return;
+    
+    setMessages(prev => [...prev, { role: 'user', content: input }]);
+    setInput('');
+    setStreaming(true);
+
+    const response = await fetch('http://localhost:3001/api/genie/stream-chat', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${directusToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message: input }),
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let assistantMessage = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      const lines = chunk.split('\n\n');
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = JSON.parse(line.slice(6));
+          
+          if (data.type === 'textResponseChunk') {
+            assistantMessage += data.textResponse;
+            setMessages(prev => {
+              const updated = [...prev];
+              const lastMsg = updated[updated.length - 1];
+              
+              if (lastMsg?.role === 'assistant') {
+                lastMsg.content = assistantMessage;
+              } else {
+                updated.push({ role: 'assistant', content: assistantMessage });
+              }
+              
+              return updated;
+            });
+            
+            if (data.close) {
+              setStreaming(false);
+            }
+          }
+        }
+      }
+    }
+  };
+
+  return (
+    <div>
+      <div className="messages">
+        {messages.map((msg, i) => (
+          <div key={i} className={msg.role}>
+            {msg.content}
+          </div>
+        ))}
+      </div>
+      
+      <input
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+        disabled={streaming}
+        placeholder="Ask Genie anything..."
+      />
+      
+      <button onClick={sendMessage} disabled={streaming}>
+        {streaming ? 'Streaming...' : 'Send'}
+      </button>
+    </div>
+  );
+}
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Captions API" icon="closed-captioning" href="/api/captions">
+    Non-streaming caption generation endpoint
+  </Card>
+  <Card title="Queue API" icon="layer-group" href="/api/queue">
+    Enqueue long-running AI tasks as background jobs
+  </Card>
+</CardGroup>

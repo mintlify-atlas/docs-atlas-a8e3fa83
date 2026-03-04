@@ -1,0 +1,812 @@
+---
+title: Stagehand Automation
+description: Browser automation for scraping creator platforms and publishing content
+---
+
+## Overview
+
+**Stagehand** is a browser automation framework that powers Genie Helper's platform scraping and publishing workflows. It provides AI-driven browser control using natural language commands.
+
+**Key Features**:
+
+- **AI-Powered Actions**: "Click the login button" instead of CSS selectors
+- **Cookie Injection**: Bypass login screens by reusing captured sessions
+- **Data Extraction**: Extract structured JSON from any webpage
+- **Screenshot Capture**: Visual debugging and content archival
+- **Stealth Mode**: Anti-bot detection with randomized user agents
+
+**Service Details**:
+
+- **Port**: 3002
+- **Process**: `pm2 stagehand-server`
+- **Browser**: Local Playwright (Chromium)
+- **LLM**: Ollama `qwen-2.5` for action planning
+
+## Architecture
+
+### Stagehand in the Stack
+
+```
+AnythingLLM Agent → Stagehand MCP (9 tools) → Stagehand Server (port 3002)
+                                                      ↓
+                                              Playwright Browser
+                                                      ↓
+                                  OnlyFans / Fansly / Instagram / etc.
+```
+
+### MCP Integration
+
+Stagehand is exposed to the AnythingLLM agent via the **Stagehand MCP Server**.
+
+**Location**: `/home/daytona/workspace/source/scripts/stagehand-mcp-server.mjs:1`
+
+**9 MCP Tools**:
+
+| Tool | Description |
+|------|-------------|
+| `start-session` | Initialize new browser session |
+| `navigate` | Load URL in existing session |
+| `act` | Perform action via natural language (click, type, scroll) |
+| `extract` | Extract structured data using AI |
+| `observe` | List interactive elements on page |
+| `screenshot` | Capture current page as image |
+| `get-cookies` | Read all cookies from session |
+| `set-cookies` | Inject cookie array (for authenticated sessions) |
+| `close-session` | End session and cleanup browser |
+
+### Stagehand Models
+
+**LLM for Actions**: Stagehand uses an Ollama model for understanding natural language actions and page structure.
+
+**Default Model**: `ollama/qwen-2.5`
+
+**Configuration**:
+
+```bash
+export STAGEHAND_MODEL="ollama/qwen-2.5"
+export STAGEHAND_URL="http://127.0.0.1:3002"
+```
+
+**Model Selection Criteria**:
+
+- Fast inference (< 5s per action)
+- Good DOM understanding
+- Reliable JSON output
+- Small memory footprint (< 5GB RAM)
+
+**Alternative Models**:
+
+- `ollama/dolphin-mistral:7b`: Uncensored, good for adult content selectors
+- `ollama/llama3.2:3b`: Faster but less accurate
+- `ollama/phi-3.5`: Lightweight fallback
+
+## Browser Sessions
+
+### Starting a Session
+
+**MCP Tool**: `start-session`
+
+**Parameters**:
+
+- `headless` (boolean, optional): Run browser without GUI (default: true)
+
+**Example**:
+
+```javascript
+// Via MCP tool
+const result = await mcpClient.callTool('start-session', { 
+  headless: true 
+});
+
+const sessionId = result.sessionId;
+```
+
+**HTTP Equivalent**:
+
+```bash
+curl -X POST http://127.0.0.1:3002/v1/sessions/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "modelName": "ollama/qwen-2.5",
+    "browser": {
+      "type": "local",
+      "launchOptions": {
+        "headless": true,
+        "args": [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-blink-features=AutomationControlled",
+          "--window-size=1920,1080"
+        ]
+      }
+    }
+  }'
+```
+
+**Response**:
+
+```json
+{
+  "sessionId": "sess_a3f8c2b1",
+  "status": "started"
+}
+```
+
+### Session Lifecycle
+
+Each session is a dedicated Chromium browser instance:
+
+- **Memory**: ~300MB RAM per session
+- **Concurrency Limit**: ~33 sessions (10GB RAM available)
+- **Auto-Cleanup**: Sessions expire after 30 minutes of inactivity
+- **Manual Cleanup**: Always call `close-session` when done
+
+### Closing a Session
+
+**MCP Tool**: `close-session`
+
+**Parameters**:
+
+- `session_id` (string): Session ID from `start-session`
+
+**Example**:
+
+```javascript
+await mcpClient.callTool('close-session', { 
+  session_id: sessionId 
+});
+```
+
+**HTTP Equivalent**:
+
+```bash
+curl -X POST http://127.0.0.1:3002/v1/sessions/sess_a3f8c2b1/end \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+## Scraping Workflows
+
+### Cookie-Based Authentication
+
+The primary scraping pattern uses captured cookies to bypass login:
+
+**Flow**:
+
+1. **Capture Cookies**: User logs into platform → browser extension captures cookies
+2. **Store Encrypted**: Cookies stored in `platform_sessions` collection (AES-256-GCM)
+3. **Start Session**: Create new Stagehand browser session
+4. **Inject Cookies**: Use `set-cookies` tool to inject captured cookies
+5. **Navigate**: Load creator profile page (now authenticated)
+6. **Extract Data**: Use `extract` tool to scrape stats, posts, earnings
+7. **Close Session**: Clean up browser
+
+**Action Runner Step** (`stepExecutors.js:222`):
+
+```javascript
+async stagehand_cookie_login(config, signal) {
+  const { creator_profile_id, platform } = config;
+  
+  // 1. Fetch encrypted cookies from Directus
+  const sessRes = await directusFetch(
+    `/items/platform_sessions?filter[creator_profile_id]=${creator_profile_id}&filter[platform]=${platform}&limit=1`
+  );
+  
+  if (!sessRes.data?.[0]?.cookies) {
+    throw new Error(`No cookies found for ${platform}. Create HITL session.`);
+  }
+  
+  const cookies = JSON.parse(decryptJSON(sessRes.data[0].cookies));
+  
+  // 2. Start Stagehand session
+  const startRes = await stagehandFetch("/v1/sessions/start", {
+    modelName: "ollama/qwen-2.5",
+    browser: { type: "local", launchOptions: { headless: true } }
+  });
+  
+  const sessionId = startRes.sessionId;
+  
+  // 3. Inject cookies
+  await stagehandFetch(`/v1/sessions/${sessionId}/cookies`, { cookies });
+  
+  // 4. Navigate to platform
+  const targetUrl = PLATFORM_URLS[platform]; // e.g., "https://onlyfans.com/my/profile"
+  await stagehandFetch(`/v1/sessions/${sessionId}/navigate`, { url: targetUrl });
+  
+  return { sessionId };
+}
+```
+
+### Extracting Data
+
+**MCP Tool**: `extract`
+
+**Parameters**:
+
+- `session_id` (string): Active session ID
+- `instruction` (string): What to extract in natural language
+- `schema` (object, optional): JSON schema for structured output
+
+**Example: Scrape OnlyFans Profile Stats**:
+
+```javascript
+const result = await mcpClient.callTool('extract', {
+  session_id: sessionId,
+  instruction: "Extract the creator's follower count, earnings this month, and total posts",
+  schema: {
+    followers: "number",
+    monthly_earnings: "number",
+    total_posts: "number"
+  }
+});
+
+// Result:
+{
+  followers: 12543,
+  monthly_earnings: 8723.50,
+  total_posts: 342
+}
+```
+
+**HTTP Equivalent**:
+
+```bash
+curl -X POST http://127.0.0.1:3002/v1/sessions/sess_a3f8c2b1/extract \
+  -H "Content-Type: application/json" \
+  -d '{
+    "instruction": "Extract follower count, earnings, and total posts",
+    "schema": {
+      "followers": "number",
+      "monthly_earnings": "number",
+      "total_posts": "number"
+    }
+  }'
+```
+
+### Example: OnlyFans Profile Scrape
+
+**Full Workflow** (from `seed_platform_scrape_flow.mjs:1`):
+
+```javascript
+const flow = {
+  slug: "onlyfans_scrape",
+  steps: [
+    {
+      type: "stagehand_cookie_login",
+      config: {
+        creator_profile_id: "{{user.creator_profile_id}}",
+        platform: "onlyfans"
+      }
+    },
+    {
+      type: "stagehand_extract",
+      config: {
+        sessionId: "{{prev.sessionId}}",
+        instruction: "Extract profile stats: followers, earnings, recent posts",
+        schema: {
+          followers: "number",
+          monthly_earnings: "number",
+          recent_posts: [{
+            post_id: "string",
+            caption: "string",
+            likes: "number",
+            comments: "number",
+            media_type: "string",
+            published_at: "string"
+          }]
+        }
+      }
+    },
+    {
+      type: "directus_create_items",
+      config: {
+        collection: "scraped_media",
+        items: "{{prev.recent_posts}}"
+      }
+    },
+    {
+      type: "stagehand_close",
+      config: {
+        sessionId: "{{steps[0].sessionId}}"
+      }
+    }
+  ]
+};
+```
+
+## Publishing Workflows
+
+### Cross-Platform Posting
+
+Stagehand also handles automated content publishing to creator platforms.
+
+**Supported Platforms**:
+
+- OnlyFans
+- Fansly
+- Instagram
+- TikTok
+- X (Twitter)
+- Reddit
+
+### Publishing Flow
+
+**Worker Job**: `publish_post` (media-worker queue)
+
+**Location**: `/home/daytona/workspace/source/media-worker/index.js:854`
+
+**Steps**:
+
+1. **Fetch Post Data**: Get `scheduled_posts` record + media file
+2. **Start Session**: Create Stagehand session
+3. **Inject Cookies**: Load platform cookies from `platform_sessions`
+4. **Navigate to Upload**: Go to platform's upload page
+5. **Upload Media**: Use `act` tool to interact with file input
+6. **Set Caption**: Type caption via `act` tool
+7. **Submit Post**: Click publish button via `act` tool
+8. **Verify**: Screenshot + extract post URL
+9. **Update Record**: Mark `scheduled_posts` status as `published`
+10. **Close Session**: Clean up browser
+
+### Example: OnlyFans Post
+
+**Action Sequence**:
+
+```javascript
+// 1. Navigate to upload page
+await stagehandFetch(`/v1/sessions/${sessionId}/navigate`, {
+  url: "https://onlyfans.com/my/profile/upload"
+});
+
+// 2. Upload media file
+await stagehandFetch(`/v1/sessions/${sessionId}/act`, {
+  action: "Click the 'Upload Media' button and select the file"
+});
+
+// 3. Set caption
+await stagehandFetch(`/v1/sessions/${sessionId}/act`, {
+  action: `Type the caption: "${caption}" into the text area`
+});
+
+// 4. Set price (if paid post)
+await stagehandFetch(`/v1/sessions/${sessionId}/act`, {
+  action: "Click the price button and set price to $19.99"
+});
+
+// 5. Publish
+await stagehandFetch(`/v1/sessions/${sessionId}/act`, {
+  action: "Click the Publish button"
+});
+
+// 6. Verify
+const result = await stagehandFetch(`/v1/sessions/${sessionId}/extract`, {
+  instruction: "Extract the published post URL",
+  schema: { post_url: "string" }
+});
+```
+
+## Natural Language Actions
+
+### Using the `act` Tool
+
+**MCP Tool**: `act`
+
+**Parameters**:
+
+- `session_id` (string): Active session ID
+- `action` (string): Natural language description of action
+
+**Supported Actions**:
+
+- **Click**: "Click the Login button", "Click the 3rd profile image"
+- **Type**: "Type 'hello@example.com' into the email field"
+- **Scroll**: "Scroll down 500 pixels", "Scroll to the bottom of the page"
+- **Select**: "Select 'Premium' from the subscription dropdown"
+- **Upload**: "Upload the file 'image.jpg' to the file input"
+- **Wait**: "Wait for the loading spinner to disappear"
+
+**Examples**:
+
+```javascript
+// Login flow
+await mcpClient.callTool('act', {
+  session_id: sessionId,
+  action: "Type 'myusername' into the username field"
+});
+
+await mcpClient.callTool('act', {
+  session_id: sessionId,
+  action: "Type 'mypassword' into the password field"
+});
+
+await mcpClient.callTool('act', {
+  session_id: sessionId,
+  action: "Click the Login button"
+});
+
+// Wait for navigation
+await mcpClient.callTool('act', {
+  session_id: sessionId,
+  action: "Wait for the dashboard to load"
+});
+```
+
+### Action Reliability
+
+**Factors Affecting Success**:
+
+- **Page Complexity**: Simple forms work better than complex SPAs
+- **Dynamic Content**: React/Vue apps may need wait times
+- **CAPTCHA**: Cannot bypass human verification
+- **Rate Limiting**: Repeated actions may trigger bot detection
+
+**Best Practices**:
+
+- Use cookie injection instead of login automation when possible
+- Add explicit waits after navigation: `"Wait 3 seconds"`
+- Use screenshots to debug failed actions
+- Fallback to CSS selectors for critical paths
+
+## Cookie Management
+
+### Setting Cookies
+
+**MCP Tool**: `set-cookies`
+
+**Parameters**:
+
+- `session_id` (string): Active session ID
+- `cookies` (array): Cookie objects
+
+**Cookie Object Format**:
+
+```javascript
+{
+  name: "session_id",
+  value: "abc123...",
+  domain: ".onlyfans.com",
+  path: "/",
+  secure: true,
+  httpOnly: true,
+  sameSite: "Lax",
+  expirationDate: 1735689600
+}
+```
+
+**Example**:
+
+```javascript
+const cookies = [
+  { name: "auth_token", value: "xyz789", domain: ".onlyfans.com" },
+  { name: "sess_id", value: "sess_abc", domain: ".onlyfans.com" }
+];
+
+await mcpClient.callTool('set-cookies', {
+  session_id: sessionId,
+  cookies: cookies
+});
+```
+
+### Getting Cookies
+
+**MCP Tool**: `get-cookies`
+
+**Parameters**:
+
+- `session_id` (string): Active session ID
+
+**Example**:
+
+```javascript
+const result = await mcpClient.callTool('get-cookies', {
+  session_id: sessionId
+});
+
+// Result: array of cookie objects
+[
+  { name: "auth_token", value: "xyz789", domain: ".onlyfans.com", ... },
+  { name: "sess_id", value: "sess_abc", domain: ".onlyfans.com", ... }
+]
+```
+
+**Use Case**: Capture cookies after successful login automation for future reuse.
+
+## Screenshots
+
+### Capturing Screenshots
+
+**MCP Tool**: `screenshot`
+
+**Parameters**:
+
+- `session_id` (string): Active session ID
+
+**Example**:
+
+```javascript
+const result = await mcpClient.callTool('screenshot', {
+  session_id: sessionId
+});
+
+// Result: base64-encoded PNG
+{
+  screenshot: "data:image/png;base64,iVBORw0KGgoAAAANS..."
+}
+```
+
+**Use Cases**:
+
+- Debug failed extractions
+- Verify successful posts
+- Archive page states
+- HITL error reporting
+
+### Storing Screenshots
+
+To save screenshots to Directus:
+
+```javascript
+const { screenshot } = await mcpClient.callTool('screenshot', { session_id: sessionId });
+
+// Decode base64 to buffer
+const buffer = Buffer.from(screenshot.split(',')[1], 'base64');
+
+// Upload to Directus
+const formData = new FormData();
+formData.append('file', buffer, 'screenshot.png');
+
+const uploadRes = await directusApi.post('/files', formData);
+const fileId = uploadRes.data.data.id;
+
+// Link to media_jobs record
+await directusApi.patch(`/items/media_jobs/${jobId}`, {
+  screenshot_file_id: fileId
+});
+```
+
+## Performance & Limits
+
+### Resource Usage
+
+**Per Session**:
+
+- **RAM**: ~300MB
+- **CPU**: ~10% during active browsing, ~0% idle
+- **Disk**: ~50MB temp files (auto-cleanup)
+
+**Server Limits** (IONOS VPS):
+
+- **Total RAM**: 10GB available for Stagehand
+- **Max Sessions**: ~33 concurrent (10GB / 300MB)
+- **Current Usage**: ~4-6 sessions during peak hours
+
+### Action Latency
+
+**Typical Timings**:
+
+- `start-session`: 2-5 seconds
+- `navigate`: 1-3 seconds
+- `act`: 3-8 seconds (includes LLM inference)
+- `extract`: 5-15 seconds (depends on page complexity)
+- `screenshot`: 0.5-1 second
+- `close-session`: 0.5-1 second
+
+**Optimization Tips**:
+
+- Reuse sessions for multiple operations
+- Cache extraction results (see `extractCache.js`)
+- Use parallel sessions for bulk scraping
+- Disable screenshots unless debugging
+
+### Extraction Caching
+
+**Location**: `/home/daytona/workspace/source/server/utils/cache/extractCache.js:2`
+
+**TTL**: 5 minutes
+
+**Cache Key**: Hash of `sessionId + instruction + schema`
+
+**Usage** (Action Runner):
+
+```javascript
+async stagehand_extract_cached(config, signal) {
+  const { sessionId, instruction, schema } = config;
+  const cacheKey = hash({ sessionId, instruction, schema });
+  
+  // Check cache first
+  const cached = extractCache.get(cacheKey);
+  if (cached) return cached;
+  
+  // Fallback to real extraction
+  const result = await stagehandFetch(
+    `/v1/sessions/${sessionId}/extract`,
+    { instruction, schema }
+  );
+  
+  // Store in cache
+  extractCache.set(cacheKey, result, 300); // 5 min TTL
+  
+  return result;
+}
+```
+
+## Stealth & Anti-Detection
+
+### Browser Fingerprinting
+
+Stagehand uses stealth techniques to avoid bot detection:
+
+**Launch Args** (`stagehand-mcp-server.mjs:50`):
+
+```javascript
+launchOptions: {
+  headless: true,
+  args: [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-blink-features=AutomationControlled", // Hide webdriver flag
+    "--window-size=1920,1080" // Standard desktop size
+  ]
+}
+```
+
+### User Agent Rotation
+
+Cookie reuse includes original user agent:
+
+**Flow**:
+
+1. Browser extension captures cookies + `navigator.userAgent`
+2. Stored in `platform_sessions.user_agent`
+3. Stagehand session sets matching user agent before cookie injection
+
+**Implementation** (media-worker):
+
+```javascript
+const session = await directusApi.get(
+  `/items/platform_sessions?filter[platform]=${platform}`
+);
+
+const userAgent = session.data.data[0].user_agent;
+
+const startRes = await stagehandFetch("/v1/sessions/start", {
+  browser: {
+    launchOptions: {
+      args: [`--user-agent=${userAgent}`]
+    }
+  }
+});
+```
+
+### Rate Limiting
+
+To avoid platform bans:
+
+- **Scrape Frequency**: Configurable via `creator_profiles.scrape_frequency` (cron)
+- **Recommended**: Every 6 hours (`0 */6 * * *`)
+- **Minimum**: Every 1 hour (more frequent = higher risk)
+
+## Error Handling
+
+### Common Errors
+
+**1. Session Not Found**
+
+```json
+{
+  "error": "Session sess_abc123 not found"
+}
+```
+
+**Cause**: Session expired or was closed.
+
+**Fix**: Start a new session.
+
+**2. Action Failed**
+
+```json
+{
+  "error": "Could not find element matching: 'Login button'"
+}
+```
+
+**Cause**: Page structure changed or action ambiguous.
+
+**Fix**: 
+
+- Take a screenshot to verify page state
+- Use more specific action description
+- Add a wait before action: `"Wait 2 seconds then click Login"`
+
+**3. Extraction Failed**
+
+```json
+{
+  "error": "Extraction timeout after 30s"
+}
+```
+
+**Cause**: LLM took too long to parse page.
+
+**Fix**:
+
+- Simplify schema (fewer fields)
+- Navigate to simpler sub-page
+- Use `observe` tool to verify content exists
+
+### Error Propagation
+
+Stagehand MCP server surfaces HTTP errors to the agent:
+
+**MCP Error Handling** (`stagehand-mcp-server.mjs:26`):
+
+```javascript
+if (!res.ok) {
+  const errMsg = (typeof data === 'object' && data !== null)
+    ? (data.error || data.message || JSON.stringify(data))
+    : String(data || res.statusText);
+  throw new Error(`Stagehand error ${res.status}: ${errMsg}`);
+}
+```
+
+**Action Runner** catches and logs errors:
+
+```javascript
+try {
+  const result = await executors.stagehand_extract(config, signal);
+} catch (err) {
+  await directusApi.post('/items/agent_audits', {
+    action_slug: 'stagehand_extract',
+    status: 'error',
+    error_message: err.message
+  });
+  throw err; // Re-throw to fail the flow
+}
+```
+
+## Troubleshooting
+
+### Check Stagehand Service
+
+```bash
+pm2 status stagehand-server
+pm2 logs stagehand-server --lines 50
+```
+
+### Restart Stagehand
+
+```bash
+pm2 restart stagehand-server
+```
+
+### Test Session Manually
+
+```bash
+# Start session
+curl -X POST http://127.0.0.1:3002/v1/sessions/start \
+  -H "Content-Type: application/json" \
+  -d '{"modelName":"ollama/qwen-2.5","browser":{"type":"local"}}'
+
+# Extract sessionId from response, then navigate
+curl -X POST http://127.0.0.1:3002/v1/sessions/SESS_ID/navigate \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com"}'
+
+# Take screenshot
+curl -X POST http://127.0.0.1:3002/v1/sessions/SESS_ID/screenshot
+```
+
+### Debug Failed Extraction
+
+1. Take screenshot before extraction
+2. Use `observe` tool to list available elements
+3. Simplify instruction to single field
+4. Check Ollama model is running: `curl http://localhost:11434/api/tags`
+
+## Related Documentation
+
+- [Browser Extension](/integrations/browser-extension) - Cookie capture for authenticated sessions
+- [Directus CMS](/integrations/directus-cms) - Collections for jobs and scraped data
+- [Platform Connections](/integrations/platform-connections) - Managing creator credentials

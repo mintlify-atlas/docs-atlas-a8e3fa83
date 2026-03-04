@@ -1,0 +1,251 @@
+---
+title: Installation
+description: Complete installation guide for Genie Helper with prerequisites and setup steps
+---
+
+## Overview
+
+Genie Helper is a self-hosted AI operations platform for adult content creators. This guide covers installation on a Linux VPS with Plesk.
+
+## Prerequisites
+
+### System Requirements
+
+- **OS**: Linux (Ubuntu 20.04+ or Debian 11+ recommended)
+- **RAM**: Minimum 16GB (32GB recommended)
+  - Ollama models: ~4.8GB per loaded model
+  - Stagehand browser sessions: ~300MB per active session
+  - ~10GB available = ~33 concurrent browser sessions max
+- **CPU**: Multi-core CPU (GPU optional but recommended for faster LLM inference)
+- **Disk**: 50GB+ SSD storage
+- **Server**: IONOS dedicated VPS or equivalent (~$100/mo)
+
+### Required Software
+
+- **Node.js**: v18 or higher
+- **PM2**: Process manager for Node.js services
+- **Nginx**: Reverse proxy (via Plesk or standalone)
+- **Redis**: Required for BullMQ job queue
+- **Ollama**: Local LLM inference engine
+- **ImageMagick**: Media watermarking
+- **FFmpeg**: Video processing and teaser generation
+- **Git**: For cloning the repository
+
+### Domain Setup
+
+- Primary domain: `geniehelper.com` (or your domain)
+- Optional admin subdomains:
+  - `cms.geniehelper.com` - Directus admin panel
+  - `agent.geniehelper.com` - AnythingLLM admin UI
+
+## Installation Steps
+
+### 1. Install System Dependencies
+
+```bash
+# Update package list
+sudo apt update && sudo apt upgrade -y
+
+# Install Node.js (v18+)
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Install PM2 globally
+sudo npm install -g pm2
+
+# Install Redis
+sudo apt install -y redis-server
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
+
+# Install ImageMagick and FFmpeg
+sudo apt install -y imagemagick ffmpeg
+
+# Install Git
+sudo apt install -y git
+```
+
+### 2. Install Ollama
+
+```bash
+# Install Ollama
+curl -fsSL https://ollama.ai/install.sh | sh
+
+# Start Ollama service
+sudo systemctl enable ollama
+sudo systemctl start ollama
+
+# Verify Ollama is running
+curl http://localhost:11434/api/version
+```
+
+### 3. Pull Required Ollama Models
+
+```bash
+# Orchestrator / tool planning
+ollama pull dolphin3:8b-llama3.1-q4_K_M
+
+# Uncensored content writer
+ollama pull dolphin-mistral:7b
+
+# Primary agent model
+ollama pull qwen-2.5:latest
+
+# Fallback classifier
+ollama pull phi-3.5:latest
+
+# Lightweight summarizer
+ollama pull llama3.2:3b
+
+# Fast taxonomy classifier
+ollama pull scout-fast-tag:latest
+
+# Embeddings model
+ollama pull bge-m3:latest
+```
+
+### 4. Clone Repository
+
+```bash
+# Clone to your desired location
+cd /var/www/vhosts/geniehelper.com/
+git clone <repository-url> agentx
+cd agentx
+```
+
+### 5. Install Dependencies
+
+```bash
+# Install root dependencies
+npm install
+
+# Install AnythingLLM server dependencies
+cd server && npm install && cd ..
+
+# Install Directus dependencies
+cd cms && npm install && cd ..
+
+# Install dashboard dependencies
+cd dashboard && npm install && cd ..
+
+# Install media worker dependencies
+cd media-worker && npm install && cd ..
+```
+
+### 6. Build Dashboard
+
+```bash
+cd dashboard
+npm run build
+cd ..
+```
+
+The built files will be in `dashboard/dist/`.
+
+### 7. Configure Environment Variables
+
+See the [Configuration](/deployment/configuration) page for detailed environment variable setup.
+
+### 8. Initialize Database
+
+```bash
+# AnythingLLM Prisma setup
+cd server
+npx prisma generate
+npx prisma migrate dev --name init
+cd ..
+
+# Directus initialization (first run)
+# Directus will auto-migrate on first startup
+```
+
+### 9. Start Services with PM2
+
+See the [Services](/deployment/services) page for PM2 configuration and startup commands.
+
+### 10. Configure Nginx
+
+See the [Nginx Setup](/deployment/nginx) page for reverse proxy configuration.
+
+## Post-Installation
+
+### Verify Services
+
+```bash
+# Check all services are running
+pm2 status
+
+# Should show 6 processes running:
+# - anything-llm (port 3001)
+# - agentx-cms (port 8055)
+# - stagehand-server (port 3002)
+# - genie-dashboard (port 3100)
+# - media-worker (no port)
+# - anything-collector (no port)
+```
+
+### Access Admin Panels
+
+| Service | URL | Default Credentials |
+|---------|-----|--------------------|
+| Dashboard | `https://geniehelper.com/app/` | (register new account) |
+| Admin Panel | `https://geniehelper.com/admin` | admin@geniehelper.com |
+| Directus | `http://localhost:8055/admin` | admin@geniehelper.com / password |
+| AnythingLLM | `http://localhost:3001` | poweradmin@geniehelper.com / (MY)P@$$w3rd |
+
+**Security Note**: Change all default passwords before public launch.
+
+## Troubleshooting
+
+### Service Won't Start
+
+```bash
+# Check PM2 logs
+pm2 logs <service-name> --lines 50
+
+# Example:
+pm2 logs anything-llm --lines 50
+pm2 logs media-worker --lines 50
+```
+
+### Redis Connection Issues
+
+```bash
+# Check Redis status
+sudo systemctl status redis-server
+
+# Test Redis connection
+redis-cli ping
+# Should return: PONG
+```
+
+### Ollama Model Issues
+
+```bash
+# List installed models
+ollama list
+
+# Test model generation
+ollama run qwen-2.5:latest "Hello"
+```
+
+### Port Conflicts
+
+Ensure the following ports are available:
+- 3001 (AnythingLLM)
+- 8055 (Directus)
+- 3002 (Stagehand)
+- 3100 (Dashboard - if using `serve`)
+- 11434 (Ollama)
+- 6379 (Redis)
+
+```bash
+# Check port usage
+sudo netstat -tulpn | grep -E '3001|8055|3002|3100|11434|6379'
+```
+
+## Next Steps
+
+- [Configure environment variables](/deployment/configuration)
+- [Set up and manage services](/deployment/services)
+- [Configure Nginx reverse proxy](/deployment/nginx)

@@ -1,0 +1,242 @@
+---
+title: 'Authentication'
+description: 'Directus JWT, admin tokens, and auth flows for Genie Helper API'
+---
+
+## Overview
+
+Genie Helper uses **Directus** as its authentication backend. The API supports three authentication strategies:
+
+1. **Directus JWT** - User authentication for client-facing endpoints
+2. **Shared Secret** - Server-to-server communication (credential encryption)
+3. **Admin Token** - Internal privileged operations (never exposed to clients)
+
+## Directus JWT Authentication
+
+### Login Flow
+
+Clients authenticate via the Directus `/auth/login` endpoint:
+
+**Request:**
+```bash
+curl -X POST http://127.0.0.1:8055/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "creator@example.com",
+    "password": "securepassword123"
+  }'
+```
+
+**Response:**
+```json
+{
+  "data": {
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjEyMzQiLCJyb2xlIjoiODA0ZDQ4N2UtMjIwMC00Y2M0LWIxODgtNzA0NjU0NzFlMGE0IiwiaWF0IjoxNzA5MDAwMDAwfQ...",
+    "refresh_token": "rVzG8...",
+    "expires": 900000
+  }
+}
+```
+
+### Using the Token
+
+Include the `access_token` in the `Authorization` header for all authenticated requests:
+
+```bash
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+**Example - Generate Caption:**
+```bash
+curl -X POST http://localhost:3001/api/captions/generate \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "platform": "onlyfans",
+    "tone": "playful",
+    "topic": "new photo set",
+    "length": "medium"
+  }'
+```
+
+### Token Validation
+
+Endpoints validate tokens by calling Directus `/users/me`:
+
+```javascript
+// From captions.js:42
+const me = await fetch(`${DIRECTUS_URL}/users/me?fields=id,email,first_name`, {
+  headers: { Authorization: `Bearer ${token}` },
+});
+if (!me.ok) {
+  res.status(401).json({ ok: false, error: "Invalid or expired token" });
+}
+```
+
+If validation fails, the endpoint returns `401 Unauthorized`.
+
+### Token Refresh
+
+When the access token expires (default TTL: 15 minutes), use the refresh token:
+
+```bash
+curl -X POST http://127.0.0.1:8055/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "rVzG8..."}'
+```
+
+**Response:**
+```json
+{
+  "data": {
+    "access_token": "<new_access_token>",
+    "refresh_token": "<new_refresh_token>",
+    "expires": 900000
+  }
+}
+```
+
+## Shared Secret (X-RBAC-SYNC-SECRET)
+
+### Purpose
+
+Server-to-server endpoints that handle sensitive operations (credential encryption/decryption) require a shared secret header instead of user JWT.
+
+**Endpoints using this method:**
+- `POST /api/credentials/store`
+- `POST /api/credentials/reveal`
+- `POST /api/credentials/reveal-download-cred`
+- `POST /api/credentials/get-platform-session`
+
+### Configuration
+
+Set in `.env`:
+```bash
+RBAC_SYNC_WEBHOOK_SECRET=your-random-secret-key-min-32-chars
+```
+
+### Usage
+
+```bash
+curl -X POST http://localhost:3001/api/credentials/store \
+  -H "X-RBAC-SYNC-SECRET: your-random-secret-key-min-32-chars" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "creatorProfileId": "uuid-1234",
+    "credentials": {"api_key": "secret123"}
+  }'
+```
+
+### Validation Logic
+
+```javascript
+// From credentials.js:39
+function assertSecret(req) {
+  const secret = process.env.RBAC_SYNC_WEBHOOK_SECRET;
+  if (!secret) throw Object.assign(new Error("RBAC_SYNC_WEBHOOK_SECRET not set"), { status: 500 });
+  const hdr = req.header("X-RBAC-SYNC-SECRET");
+  if (!hdr || hdr !== secret)
+    throw Object.assign(new Error("Unauthorized"), { status: 401 });
+}
+```
+
+<Warning>
+Never expose `RBAC_SYNC_WEBHOOK_SECRET` to client-side code. This is strictly for server-to-server communication.
+</Warning>
+
+## Admin Token (DIRECTUS_ADMIN_TOKEN)
+
+### Purpose
+
+Some operations require Directus admin privileges but should not require end-users to be admins:
+
+1. **User registration** (`/api/register`) - Creates users via admin token so public registration doesn't require open Directus permissions
+2. **Credential storage** - Writes to `platform_connections` table via admin token
+3. **Queue stats** - Reads queue metadata
+
+### Configuration
+
+```bash
+# .env
+DIRECTUS_ADMIN_TOKEN=agentx-directus-admin-static-2026
+```
+
+### Example - Registration Flow
+
+From `register.js:43`:
+```javascript
+const dRes = await fetch(`${DIRECTUS_URL}/users`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${DIRECTUS_ADMIN_TOKEN}`,
+  },
+  body: JSON.stringify({
+    email,
+    password,
+    first_name: firstName || email.split("@")[0],
+    status: "active",
+    role: "804d487e-2200-4cc4-b188-70465471e0a4", // Pro role
+    subscription_tier: "pro",
+  }),
+});
+```
+
+This allows public users to register without requiring `directus_users` to have public `create` permissions.
+
+<Warning>
+Never expose `DIRECTUS_ADMIN_TOKEN` in client code or API responses. It grants full database access.
+</Warning>
+
+## User Role Resolution
+
+Some endpoints verify admin status by checking the authenticated user's role:
+
+```javascript
+// From genieChat.js:189
+const meRes = await fetch(
+  `${DIRECTUS_URL}/users/me?fields=admin_access,role.name`,
+  { headers: { Authorization: `Bearer ${req.header("Authorization")?.slice(7)}` } }
+);
+const me = await meRes.json();
+const isAdmin =
+  me?.data?.admin_access === true ||
+  me?.data?.role?.name === "Administrator";
+if (!isAdmin) {
+  return res.status(403).json({ error: "Admin only" });
+}
+```
+
+## Security Best Practices
+
+<AccordionGroup>
+  <Accordion title="Token Storage">
+    - Store tokens in secure, httpOnly cookies or native secure storage
+    - Never store tokens in localStorage (XSS risk)
+    - Implement automatic token refresh before expiry
+  </Accordion>
+
+  <Accordion title="Environment Variables">
+    - Rotate `RBAC_SYNC_WEBHOOK_SECRET` and `DIRECTUS_ADMIN_TOKEN` regularly
+    - Use different secrets for development/staging/production
+    - Never commit secrets to version control
+  </Accordion>
+
+  <Accordion title="HTTPS in Production">
+    - Always use HTTPS in production (enable via `ENABLE_HTTPS=true`)
+    - Configure SSL certificates (`HTTPS_CERT_PATH`, `HTTPS_KEY_PATH`)
+    - Tokens transmitted over HTTP can be intercepted
+  </Accordion>
+
+  <Accordion title="Token Validation">
+    - All endpoints validate tokens by calling `/users/me` (no local JWT verification)
+    - This ensures revoked tokens are immediately invalid
+    - Adds latency but improves security
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<Card title="Credentials API" icon="lock" href="/api/credentials">
+  Learn how to encrypt and manage platform credentials
+</Card>

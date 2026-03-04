@@ -1,0 +1,192 @@
+---
+title: User Management
+description: RBAC synchronization, impersonation, and user registration
+---
+
+## Overview
+
+Genie Helper synchronizes user roles and permissions between Directus CMS and AnythingLLM to maintain consistent access control across the platform. Admin users can also impersonate other users for support and debugging purposes.
+
+## RBAC Synchronization
+
+User roles and permissions are automatically synchronized between Directus and AnythingLLM through the RBAC sync system.
+
+### How It Works
+
+- **Webhook-based sync**: Directus triggers the sync endpoint when user roles change
+- **Bidirectional updates**: Changes in either system propagate to the other
+- **Secure communication**: Protected by `RBAC_SYNC_WEBHOOK_SECRET` environment variable
+- **Implementation**: `server/endpoints/api/rbacSync.js`
+
+### Environment Configuration
+
+Ensure these environment variables are set:
+
+```bash
+RBAC_SYNC_WEBHOOK_SECRET=your-secret-key
+DIRECTUS_ADMIN_TOKEN=your-admin-token
+```
+
+### Supported Roles
+
+| Role | Directus | AnythingLLM | Permissions |
+|------|----------|-------------|-------------|
+| **Admin** | Administrator | Admin | Full system access, impersonation, RBAC management |
+| **Creator** | Creator | User | Platform access, media library, AI chat |
+| **Viewer** | Viewer | Read-only | View-only access to content |
+
+## User Registration
+
+Genie Helper uses an invite-gated registration system to control platform access during the alpha phase.
+
+### Registration Flow
+
+1. **Invite code validation**: User enters alpha invite code
+2. **Code verification**: Validated against AnythingLLM invite API
+3. **Account creation**: Creates user in both Directus and AnythingLLM
+4. **Persona setup**: Initializes `user_personas` collection with default `onboarding_state`
+5. **JWT issuance**: Returns authentication token for immediate access
+
+### Implementation Details
+
+- **Endpoint**: `/api/register`
+- **Source**: `server/endpoints/api/register.js`
+- **Frontend**: `dashboard/src/pages/Register/index.jsx`
+- **Admin token**: Registration uses admin token for user creation proxy
+
+### Default User Configuration
+
+```json
+{
+  "status": "active",
+  "role": "creator",
+  "onboarding_state": "EXTENSION_INSTALL",
+  "pricing_tier": "starter"
+}
+```
+
+## User Impersonation
+
+Admins can impersonate other users to debug issues, provide support, or test features from a user's perspective.
+
+### How to Impersonate
+
+1. **Access admin panel**: Navigate to `geniehelper.com/admin`
+2. **Select user**: Find the user you want to impersonate
+3. **Impersonate**: Click "View As" from the admin interface
+4. **Session swap**: System creates temporary impersonation session
+5. **Exit impersonation**: Close the impersonation tab or explicitly log out
+
+### Security Features
+
+- **Admin-only**: Only users with admin role can impersonate
+- **Session isolation**: Uses `sessionStorage` for impersonation tabs (not `localStorage`)
+- **Audit logging**: All impersonation events are logged
+- **Route protection**: `/view-as` route requires admin authentication
+
+### Implementation
+
+- **Backend**: `server/endpoints/api/impersonate.js`
+- **Frontend**: Admin panel interface
+- **Auth handling**: Separate JWT token issued for impersonation session
+
+### Impersonation Use Cases
+
+- Debug user-specific issues
+- Test pricing tier limitations
+- Verify platform connection status
+- Review user's media library
+- Check AI chat history and context
+
+## User Profile Management
+
+User profiles are managed through the `user_personas` collection in Directus.
+
+### Key Fields
+
+| Field | Type | Purpose |
+|-------|------|----------|
+| `user_id` | UUID | Links to Directus user |
+| `onboarding_state` | String | Current onboarding step |
+| `pricing_tier` | String | starter / creator / pro / studio |
+| `brand_primary` | Color | Custom brand color |
+| `brand_accent` | Color | Custom accent color |
+| `content_focus` | JSON | User content preferences |
+
+### Onboarding States
+
+```
+EXTENSION_INSTALL → DATA_COLLECTION → PROCESSING → COMPLETE
+```
+
+- **EXTENSION_INSTALL**: User needs to install browser extension
+- **DATA_COLLECTION**: Collecting platform data via scrape
+- **PROCESSING**: Building taxonomy and persona nodes
+- **COMPLETE**: Onboarding finished, full access granted
+
+## Admin Credentials
+
+<Warning>
+  Change these credentials before public launch
+</Warning>
+
+| Service | Access | Username | Password |
+|---------|--------|----------|----------|
+| **Dashboard Admin** | `geniehelper.com/admin` | admin@geniehelper.com | (configured in Directus) |
+| **Directus** | `localhost:8055/admin` | admin@geniehelper.com | password |
+| **AnythingLLM** | `localhost:3001` | poweradmin@geniehelper.com | (MY)P@$$w3rd |
+
+### API Key
+
+```
+38KEHYS-NVPMBSX-GVVJNYH-VQHAN9S
+```
+
+Use this API key for server-to-server communication during development.
+
+## Related Collections
+
+- **`directus_users`**: Core user accounts
+- **`user_personas`**: Extended user profiles and preferences
+- **`agent_audits`**: Logs of all agent actions per user
+- **`hitl_sessions`**: Human-in-the-loop login requests
+- **`platform_sessions`**: User platform connections and cookies
+
+## API Endpoints
+
+### RBAC Sync
+
+```http
+POST /api/rbac/sync
+Content-Type: application/json
+X-Webhook-Secret: your-secret
+
+{
+  "user_id": "uuid",
+  "role": "creator"
+}
+```
+
+### Impersonate User
+
+```http
+POST /api/impersonate
+Authorization: Bearer admin-jwt-token
+
+{
+  "target_user_id": "uuid"
+}
+```
+
+### Register New User
+
+```http
+POST /api/register
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "password": "SecurePass123",
+  "invite_code": "alpha-code"
+}
+```

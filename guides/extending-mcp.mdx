@@ -1,0 +1,517 @@
+---
+title: Extending MCP
+description: Add new MCP tools and modify existing servers for custom functionality
+---
+
+Model Context Protocol (MCP) servers expose external services as tools that the AI agent can call. Genie Helper uses three MCP servers: Directus (data layer), Ollama (LLM inference), and Stagehand (browser automation).
+
+## MCP Server Architecture
+
+```
+AnythingLLM Agent
+  ↓
+storage/plugins/anythingllm_mcp_servers.json  (config)
+  ↓
+scripts/
+  ├── directus-mcp-server.mjs   (17 tools)
+  ├── ollama-mcp-server.mjs     (3 tools)
+  └── stagehand-mcp-server.mjs  (9 tools)
+```
+
+Servers are auto-booted on AnythingLLM startup via patched `server/utils/boot/index.js`.
+
+## MCP Server Configuration
+
+Servers are defined in `storage/plugins/anythingllm_mcp_servers.json`:
+
+```json
+{
+  "mcpServers": {
+    "directus": {
+      "command": "node",
+      "args": ["/var/www/vhosts/geniehelper.com/agentx/scripts/directus-mcp-server.mjs"],
+      "env": {
+        "DIRECTUS_URL": "http://127.0.0.1:8055",
+        "DIRECTUS_EMAIL": "admin@geniehelper.com",
+        "DIRECTUS_PASSWORD": "password"
+      }
+    },
+    "ollama": {
+      "command": "node",
+      "args": ["/var/www/vhosts/geniehelper.com/agentx/scripts/ollama-mcp-server.mjs"],
+      "env": {
+        "OLLAMA_URL": "http://127.0.0.1:11434",
+        "OLLAMA_MODEL": "dolphin3:8b-llama3.1-q4_K_M"
+      }
+    },
+    "stagehand": {
+      "command": "node",
+      "args": ["/var/www/vhosts/geniehelper.com/agentx/scripts/stagehand-mcp-server.mjs"],
+      "env": {
+        "STAGEHAND_URL": "http://127.0.0.1:3002",
+        "STAGEHAND_MODEL": "ollama/qwen-2.5"
+      }
+    }
+  }
+}
+```
+
+<Note>
+  After modifying this file, restart AnythingLLM: `pm2 restart anything-llm`
+</Note>
+
+## Adding a Tool to Existing Server
+
+Let's add a new tool to the Directus MCP server.
+
+### Example: Add `bulk-delete-items` Tool
+
+**File:** `scripts/directus-mcp-server.mjs`
+
+```javascript
+server.tool(
+  "bulk-delete-items",
+  "Delete multiple items from a Directus collection by ID array",
+  {
+    collection: z.string().describe("Collection name"),
+    ids: z.array(z.string()).describe("Array of item IDs to delete"),
+  },
+  async ({ collection, ids }) => {
+    const promises = ids.map(id => 
+      directusFetch(`/items/${collection}/${id}`, { method: "DELETE" })
+    );
+    const results = await Promise.allSettled(promises);
+    const deleted = results.filter(r => r.status === "fulfilled").length;
+    const failed = results.length - deleted;
+    return { 
+      content: [{ 
+        type: "text", 
+        text: `Deleted ${deleted} items. Failed: ${failed}` 
+      }] 
+    };
+  }
+);
+```
+
+### Tool Definition Anatomy
+
+```javascript
+server.tool(
+  "tool-name",           // Unique identifier (kebab-case)
+  "Human description",   // Shown to AI agent
+  {
+    // Zod schema for parameters
+    param1: z.string().describe("What this param does"),
+    param2: z.number().optional().describe("Optional param"),
+  },
+  async (params) => {
+    // Implementation
+    return {
+      content: [{ 
+        type: "text", 
+        text: "Result data as string or JSON" 
+      }]
+    };
+  }
+);
+```
+
+**Key points:**
+- Tool names use kebab-case
+- Descriptions help the AI understand when to use the tool
+- Zod schemas validate and document parameters
+- Always include `.describe()` for parameters
+- Return format: `{ content: [{ type: "text", text: "..." }] }`
+
+## Creating a New MCP Server
+
+Let's create a new MCP server for Stripe payment integration.
+
+### 1. Create Server Script
+
+**File:** `scripts/stripe-mcp-server.mjs`
+
+```javascript
+#!/usr/bin/env node
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import Stripe from "stripe";
+
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const stripe = new Stripe(STRIPE_SECRET_KEY);
+
+const server = new McpServer({ name: "stripe", version: "1.0.0" });
+
+server.tool(
+  "list-customers",
+  "List Stripe customers with optional email filter",
+  {
+    email: z.string().optional().describe("Filter by customer email"),
+    limit: z.number().optional().describe("Max customers to return (default 10)"),
+  },
+  async ({ email, limit }) => {
+    const params = { limit: limit || 10 };
+    if (email) params.email = email;
+    
+    const customers = await stripe.customers.list(params);
+    return { 
+      content: [{ 
+        type: "text", 
+        text: JSON.stringify(customers.data, null, 2) 
+      }] 
+    };
+  }
+);
+
+server.tool(
+  "create-payment-link",
+  "Create a Stripe payment link for a subscription or one-time purchase",
+  {
+    price_id: z.string().describe("Stripe Price ID"),
+    quantity: z.number().optional().describe("Quantity (default 1)"),
+  },
+  async ({ price_id, quantity }) => {
+    const paymentLink = await stripe.paymentLinks.create({
+      line_items: [{ price: price_id, quantity: quantity || 1 }],
+    });
+    return { 
+      content: [{ 
+        type: "text", 
+        text: `Payment link created: ${paymentLink.url}` 
+      }] 
+    };
+  }
+);
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+```
+
+### 2. Make Script Executable
+
+```bash
+chmod +x scripts/stripe-mcp-server.mjs
+```
+
+### 3. Add to MCP Config
+
+**File:** `storage/plugins/anythingllm_mcp_servers.json`
+
+```json
+{
+  "mcpServers": {
+    "directus": { ... },
+    "ollama": { ... },
+    "stagehand": { ... },
+    "stripe": {
+      "command": "node",
+      "args": ["/var/www/vhosts/geniehelper.com/agentx/scripts/stripe-mcp-server.mjs"],
+      "env": {
+        "STRIPE_SECRET_KEY": "sk_live_..."
+      }
+    }
+  }
+}
+```
+
+### 4. Install Dependencies
+
+```bash
+npm install stripe
+```
+
+### 5. Restart AnythingLLM
+
+```bash
+pm2 restart anything-llm
+```
+
+### 6. Verify Tools Loaded
+
+Check AnythingLLM logs:
+
+```bash
+pm2 logs anything-llm --lines 50 | grep "MCP server"
+```
+
+You should see:
+```
+MCP server 'stripe' loaded with 2 tools
+```
+
+## MCP Server Templates
+
+### Basic HTTP API Server
+
+```javascript
+#!/usr/bin/env node
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+
+const API_URL = process.env.API_URL || "https://api.example.com";
+const API_KEY = process.env.API_KEY;
+
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(`${API_URL}${path}`, {
+    ...opts,
+    headers: {
+      "Authorization": `Bearer ${API_KEY}`,
+      "Content-Type": "application/json",
+      ...opts.headers,
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`API ${path} failed (${res.status}): ${text}`);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+const server = new McpServer({ name: "my-api", version: "1.0.0" });
+
+server.tool(
+  "get-data",
+  "Fetch data from the API",
+  {
+    id: z.string().describe("Record ID"),
+  },
+  async ({ id }) => {
+    const data = await apiFetch(`/records/${id}`);
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+  }
+);
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+```
+
+### Database Connection Server
+
+```javascript
+#!/usr/bin/env node
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import mysql from "mysql2/promise";
+
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || "localhost",
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+});
+
+const server = new McpServer({ name: "mysql", version: "1.0.0" });
+
+server.tool(
+  "query",
+  "Execute a SQL query and return results",
+  {
+    sql: z.string().describe("SQL query to execute"),
+    params: z.array(z.any()).optional().describe("Query parameters"),
+  },
+  async ({ sql, params }) => {
+    const [rows] = await pool.execute(sql, params || []);
+    return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
+  }
+);
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
+```
+
+## Existing MCP Server Tools
+
+### Directus MCP (17 tools)
+
+**Collections:**
+- `list-collections` — List all custom collections
+- `get-collection-schema` — Get field schema for a collection
+
+**Items CRUD:**
+- `read-items` — Read items with filtering, sorting, pagination
+- `read-item` — Read single item by ID
+- `create-item` — Create new item
+- `update-item` — Update existing item
+- `delete-item` — Delete item
+- `search-items` — Full-text search
+
+**Flows:**
+- `trigger-flow` — Trigger Directus Flow by UUID
+- `list-flows` — List all flows
+
+**Users:**
+- `get-me` — Get current user info
+- `list-users` — List all users
+- `get-user` — Get user by ID
+- `create-user` — Create new user
+- `update-user` — Update user
+
+**Files:**
+- `list-files` — List uploaded files
+- `get-file` — Get file metadata
+
+See: `scripts/directus-mcp-server.mjs`
+
+### Ollama MCP (3 tools)
+
+- `list-models` — List locally available models
+- `generate` — Single-turn completion
+- `chat` — Multi-turn chat with history
+
+See: `scripts/ollama-mcp-server.mjs`
+
+### Stagehand MCP (9 tools)
+
+- `start-session` — Create browser session
+- `navigate` — Navigate to URL
+- `act` — Perform action (click, type, etc.)
+- `extract` — Extract data using AI
+- `observe` — Observe page elements
+- `close-session` — End browser session
+- `set-cookies` — Inject cookies
+- `get-cookies` — Retrieve cookies
+- `screenshot` — Capture screenshot
+
+See: `scripts/stagehand-mcp-server.mjs`
+
+## Best Practices
+
+### Tool Naming
+
+- Use kebab-case: `get-user`, `create-payment-link`
+- Be descriptive: `bulk-delete-items` not `delete-many`
+- Group by resource: `user-create`, `user-update`, `user-delete`
+
+### Parameter Descriptions
+
+Always use `.describe()` for Zod schemas:
+
+```javascript
+// Good
+user_id: z.string().describe("Directus user ID (UUID format)")
+
+// Bad
+user_id: z.string()
+```
+
+Descriptions are shown to the AI agent and improve tool selection accuracy.
+
+### Error Handling
+
+```javascript
+server.tool(
+  "risky-operation",
+  "Operation that might fail",
+  { id: z.string() },
+  async ({ id }) => {
+    try {
+      const result = await dangerousOperation(id);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (err) {
+      return { 
+        content: [{ 
+          type: "text", 
+          text: `Error: ${err.message}` 
+        }] 
+      };
+    }
+  }
+);
+```
+
+### Caching
+
+For expensive operations, use caching:
+
+```javascript
+const cache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+server.tool(
+  "get-expensive-data",
+  "Fetch data with caching",
+  { id: z.string() },
+  async ({ id }) => {
+    const cached = cache.get(id);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return { content: [{ type: "text", text: cached.data }] };
+    }
+    
+    const data = await expensiveOperation(id);
+    cache.set(id, { data: JSON.stringify(data), timestamp: Date.now() });
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
+  }
+);
+```
+
+See: `server/utils/cache/extractCache.js` for cache implementation pattern.
+
+## Debugging MCP Servers
+
+### View Server Logs
+
+```bash
+pm2 logs anything-llm --lines 200 | grep MCP
+```
+
+### Test Tool Directly
+
+MCP servers use stdio transport. Test with:
+
+```bash
+echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list-models"},"id":1}' | \
+  node scripts/ollama-mcp-server.mjs
+```
+
+### Common Issues
+
+**Tool not appearing in agent:**
+- Check MCP config syntax in `anythingllm_mcp_servers.json`
+- Verify script path is absolute
+- Restart AnythingLLM: `pm2 restart anything-llm`
+
+**Environment variables not loaded:**
+- Set in `env` block of MCP config, not in shell
+- Use absolute paths for any file references
+
+**Server crashes on startup:**
+- Check `pm2 logs anything-llm` for stack trace
+- Verify all dependencies installed: `npm install`
+- Test script directly: `node scripts/my-mcp-server.mjs`
+
+## Auto-boot Implementation
+
+MCP servers are automatically started by patched AnythingLLM boot sequence.
+
+**File:** `server/utils/boot/index.js`
+
+```javascript
+const { bootMCPServers } = require('./mcpBoot');
+
+async function boot() {
+  // ... existing boot logic
+  
+  // Boot MCP servers
+  await bootMCPServers();
+  
+  // ... rest of boot
+}
+```
+
+This ensures MCP servers are available when the agent starts.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Custom Actions" icon="bolt" href="/guides/custom-actions">
+    Use MCP tools in Action Runner flows
+  </Card>
+  <Card title="Project Structure" icon="folder-tree" href="/guides/project-structure">
+    Understand where MCP servers fit
+  </Card>
+</CardGroup>

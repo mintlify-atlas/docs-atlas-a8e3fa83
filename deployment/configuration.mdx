@@ -1,0 +1,315 @@
+---
+title: Configuration
+description: Environment variables and configuration options for Genie Helper services
+---
+
+## Overview
+
+Genie Helper requires several environment variables for security, service connectivity, and feature configuration. This page documents all required and optional environment variables.
+
+## Core Security Variables
+
+### Credential Encryption
+
+**Required for production**
+
+```bash
+# Generate a random 32-byte key and encode as base64
+CREDENTIALS_ENC_KEY_B64="<base64-encoded-32-bytes>"
+```
+
+Used for AES-256-GCM encryption of platform credentials (OnlyFans, etc.) stored in Directus.
+
+**Generate a key**:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+### Directus Admin Access
+
+```bash
+# Static admin token for server-to-server API calls
+DIRECTUS_ADMIN_TOKEN="<your-admin-token>"
+```
+
+This token is used by:
+- Registration endpoint (creates users without exposing admin credentials to browser)
+- RBAC sync operations
+- Server-side Directus MCP tools
+
+**Generate in Directus**:
+1. Login to Directus admin panel (`http://localhost:8055/admin`)
+2. Settings → Access Tokens → Create New Token
+3. Name: "Server Admin Token"
+4. No expiration
+5. Copy token to `.env`
+
+### RBAC Sync Webhook
+
+```bash
+# Secret for RBAC sync webhook authentication
+RBAC_SYNC_WEBHOOK_SECRET="<random-string>"
+```
+
+Used to secure the Directus → AnythingLLM user sync webhook.
+
+**Generate**:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+## Service Configuration
+
+### AnythingLLM (server/.env)
+
+```bash
+# Server settings
+SERVER_PORT=3001
+STORAGE_DIR="./storage"
+
+# JWT secret for session management
+JWT_SECRET="<random-string>"
+
+# Admin credentials
+SERVER_ADMIN_EMAIL="poweradmin@geniehelper.com"
+SERVER_ADMIN_PASSWORD="(MY)P@$$w3rd"
+
+# API key for programmatic access
+ANYTHING_LLM_API_KEY="38KEHYS-NVPMBSX-GVVJNYH-VQHAN9S"
+
+# Ollama integration
+OLLAMA_BASE_PATH="http://localhost:11434"
+
+# Allow iframe embedding in React admin panel
+IFRAME_PARENT_ORIGIN="https://geniehelper.com"
+
+# Disable telemetry
+DISABLE_TELEMETRY=true
+
+# Enable MCP servers
+ENABLE_MCP=true
+
+# Credential encryption (shared with main server)
+CREDENTIALS_ENC_KEY_B64="<base64-encoded-32-bytes>"
+
+# Directus admin token (shared)
+DIRECTUS_ADMIN_TOKEN="<your-admin-token>"
+
+# RBAC sync secret (shared)
+RBAC_SYNC_WEBHOOK_SECRET="<random-string>"
+```
+
+### Directus CMS (cms/.env)
+
+```bash
+# Core settings
+PORT=8055
+PUBLIC_URL="http://localhost:8055"
+
+# Database (SQLite for development, PostgreSQL recommended for production)
+DB_CLIENT="sqlite3"
+DB_FILENAME="./data.db"
+
+# Admin user (first run only)
+ADMIN_EMAIL="admin@geniehelper.com"
+ADMIN_PASSWORD="password"
+
+# Security
+KEY="<random-key>"
+SECRET="<random-secret>"
+
+# CORS (allow React SPA)
+CORS_ENABLED=true
+CORS_ORIGIN="https://geniehelper.com"
+
+# CSP - Allow iframe embedding in React admin panel
+CONTENT_SECURITY_POLICY_DIRECTIVES__FRAME_ANCESTORS="https://geniehelper.com"
+
+# File uploads
+MAX_PAYLOAD_SIZE="100mb"
+FILES_MAX_UPLOAD_SIZE="100mb"
+
+# Email (optional - for password resets)
+EMAIL_FROM="noreply@geniehelper.com"
+EMAIL_TRANSPORT="smtp"
+EMAIL_SMTP_HOST="smtp.example.com"
+EMAIL_SMTP_PORT=587
+EMAIL_SMTP_USER="<smtp-user>"
+EMAIL_SMTP_PASSWORD="<smtp-password>"
+```
+
+**Generate KEY and SECRET**:
+
+```bash
+node -e "console.log(require('crypto').randomUUID())"
+```
+
+### Stagehand Server (server/.env)
+
+```bash
+# Stagehand browser automation
+STAGEHAND_PORT=3002
+STAGEHAND_HEADLESS=true
+STAGEHAND_STEALTH_MODE=true
+```
+
+### Media Worker (media-worker/.env)
+
+```bash
+# Redis connection for BullMQ
+REDIS_HOST="127.0.0.1"
+REDIS_PORT=6379
+REDIS_PASSWORD=""  # Empty if Redis has no password
+
+# Directus API
+DIRECTUS_URL="http://localhost:8055"
+DIRECTUS_ADMIN_TOKEN="<your-admin-token>"
+
+# Stagehand service
+STAGEHAND_URL="http://localhost:3002"
+
+# Credential encryption (shared)
+CREDENTIALS_ENC_KEY_B64="<base64-encoded-32-bytes>"
+
+# Job processing
+WORKER_CONCURRENCY=3  # Max concurrent jobs
+POST_SCHEDULER_INTERVAL=60000  # Poll interval (ms) for scheduled posts
+```
+
+### Dashboard (dashboard/.env)
+
+```bash
+# Build-time variables (for Vite)
+VITE_API_URL="/api/directus"
+VITE_LLM_API_URL="/api/llm"
+
+# AnythingLLM embed widget
+VITE_EMBED_ID="cf54a9c0-224c-469d-b97b-5dc8095eac82"
+VITE_EMBED_BASE_URL="/api/llm/embed"
+```
+
+## MCP Server Configuration
+
+MCP servers are configured in `storage/plugins/anythingllm_mcp_servers.json`:
+
+```json
+{
+  "servers": {
+    "directus": {
+      "command": "node",
+      "args": ["./scripts/directus-mcp-server.mjs"],
+      "env": {
+        "DIRECTUS_URL": "http://localhost:8055",
+        "DIRECTUS_ADMIN_TOKEN": "<your-admin-token>"
+      }
+    },
+    "ollama": {
+      "command": "node",
+      "args": ["./scripts/ollama-mcp-server.mjs"],
+      "env": {
+        "OLLAMA_BASE_URL": "http://localhost:11434"
+      }
+    },
+    "stagehand": {
+      "command": "node",
+      "args": ["./scripts/stagehand-mcp-server.mjs"],
+      "env": {
+        "STAGEHAND_URL": "http://localhost:3002"
+      }
+    }
+  }
+}
+```
+
+MCP servers are auto-booted on AnythingLLM startup via patched `server/utils/boot/index.js`.
+
+## Production Hardening
+
+### Change Default Passwords
+
+```bash
+# Directus admin password
+PATCH http://localhost:8055/users/<admin-user-id>
+{
+  "password": "<new-strong-password>"
+}
+
+# AnythingLLM admin password
+# Change via UI: http://localhost:3001/settings/security
+```
+
+### Enable Password Policy (Directus)
+
+```bash
+# Re-enable password policy (currently disabled for dev)
+PATCH /api/directus/settings
+{
+  "auth_password_policy": "/(?=^.{8,}$)(?=.*\\d)(?=.*[a-z])(?=.*[A-Z])(?=.*[!@#$%^&*()_+}{';'?>.<,])(?!.*\\s).*$/"
+}
+```
+
+Requirements:
+- Minimum 8 characters
+- At least 1 digit
+- At least 1 lowercase letter
+- At least 1 uppercase letter
+- At least 1 special character
+- No whitespace
+
+### Restrict Admin Access
+
+For production, restrict admin panel access:
+
+1. **IP Allowlist**: Configure Nginx to allow admin subdomains only from specific IPs
+2. **VPN**: Require VPN connection for admin access
+3. **Cookie Gate**: Use the cookie gate system (see nginx configs)
+
+### Database: SQLite → PostgreSQL
+
+For production with multiple users, migrate Directus from SQLite to PostgreSQL:
+
+```bash
+# Install PostgreSQL
+sudo apt install postgresql postgresql-contrib
+
+# Create database and user
+sudo -u postgres psql
+CREATE DATABASE geniehelper;
+CREATE USER geniehelper_user WITH PASSWORD '<strong-password>';
+GRANT ALL PRIVILEGES ON DATABASE geniehelper TO geniehelper_user;
+\q
+
+# Update cms/.env
+DB_CLIENT="pg"
+DB_HOST="localhost"
+DB_PORT=5432
+DB_DATABASE="geniehelper"
+DB_USER="geniehelper_user"
+DB_PASSWORD="<strong-password>"
+
+# Remove old DB_FILENAME line
+```
+
+## Environment Files Checklist
+
+- [ ] `server/.env` - AnythingLLM configuration
+- [ ] `cms/.env` - Directus configuration
+- [ ] `media-worker/.env` - BullMQ worker configuration
+- [ ] `dashboard/.env` - React build variables
+- [ ] `storage/plugins/anythingllm_mcp_servers.json` - MCP server config
+
+## Security Best Practices
+
+1. **Never commit `.env` files** - Add to `.gitignore`
+2. **Use strong random values** - Generate with `crypto.randomBytes()`
+3. **Rotate secrets regularly** - Especially admin tokens and encryption keys
+4. **Restrict admin token scope** - Use dedicated tokens per service if possible
+5. **Enable HTTPS** - Use SSL certificates (Let's Encrypt via Plesk)
+6. **Monitor logs** - Check PM2 logs for unauthorized access attempts
+
+## Next Steps
+
+- [Set up and manage services](/deployment/services)
+- [Configure Nginx reverse proxy](/deployment/nginx)

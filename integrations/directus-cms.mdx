@@ -1,0 +1,493 @@
+---
+title: Directus CMS
+description: Directus as the data layer for Genie Helper, managing collections, flows, and user data
+---
+
+## Overview
+
+**Directus CMS** serves as the primary data layer for Genie Helper, providing:
+
+- **Headless CMS**: RESTful API for all application data
+- **Authentication**: User management, JWT tokens, role-based access control
+- **Collections**: 11 core collections for creators, media, jobs, and platform data
+- **Flows**: Low-code automation workflows (scraping, media processing, notifications)
+- **Admin Panel**: Visual interface for data management and debugging
+
+**Service Details**:
+
+- **Port**: 8055 (proxied to `/api/directus/` in production)
+- **Process**: `pm2 agentx-cms`
+- **Admin URL**: `https://geniehelper.com/admin` (iframe in dashboard)
+
+## Architecture Integration
+
+### Data Flow
+
+```
+React Dashboard → /api/directus/* → Directus REST API (port 8055)
+                                        ↓
+                          PostgreSQL Collections (11 tables)
+                                        ↓
+              ← Directus Flows → Media Worker (BullMQ) → Stagehand
+                                        ↓
+            AnythingLLM Agent ← Directus MCP (17 tools)
+```
+
+### MCP Integration
+
+The **Directus MCP Server** exposes 17 tools to the AnythingLLM agent:
+
+**Location**: `/home/daytona/workspace/source/scripts/directus-mcp-server.mjs:1`
+
+**Tools**:
+
+| Tool | Description |
+|------|-------------|
+| `list-collections` | Get all collection names |
+| `get-collection-schema` | Get fields + relationships for a collection |
+| `read-items` | Query items with filters, sorting, pagination |
+| `read-item` | Get single item by ID |
+| `create-item` | Insert new record |
+| `update-item` | PATCH existing record |
+| `delete-item` | Delete record by ID |
+| `search-items` | Full-text search across collection |
+| `trigger-flow` | Manually trigger a Directus Flow |
+| `get-me` | Get current authenticated user |
+| `list-users` | Get all users |
+| `get-user` | Get user by ID |
+| `update-user` | Update user record |
+| `create-user` | Create new user |
+| `list-files` | Get uploaded files |
+| `get-file` | Get file metadata by ID |
+| `list-flows` | Get all automation flows |
+
+**Agent Use Case**:
+
+```
+User: "How many posts did I schedule this week?"
+
+Agent:
+1. Uses read-items tool on scheduled_posts collection
+2. Filters by date_created >= 7 days ago
+3. Returns count + summary
+```
+
+## Key Collections
+
+Genie Helper uses 11 core Directus collections:
+
+### 1. creator_profiles
+
+**Purpose**: Platform account credentials and scrape configuration
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `user_id` | M2O (directus_users) | Owner |
+| `platform` | String | Platform name (onlyfans, fansly, etc.) |
+| `username` | String | Platform username |
+| `credentials` | JSON | Encrypted login credentials (AES-256-GCM) |
+| `scrape_enabled` | Boolean | Enable automated scraping |
+| `scrape_frequency` | String | Cron expression (e.g., "0 */6 * * *") |
+| `last_scraped_at` | Timestamp | Last successful scrape |
+| `scrape_status` | String | `idle`, `running`, `success`, `error` |
+| `profile_data` | JSON | Cached profile stats (followers, earnings) |
+
+**Encryption**: The `credentials` field uses server-side AES-256-GCM encryption via `credentialsCrypto.js`.
+
+### 2. scraped_media
+
+**Purpose**: Content library with engagement metrics
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `creator_profile_id` | M2O | Source platform account |
+| `platform_post_id` | String | External post ID |
+| `media_type` | String | `image`, `video`, `gallery` |
+| `file_id` | M2O (directus_files) | Uploaded media file |
+| `caption` | Text | Post caption |
+| `tags` | JSON | Array of tags |
+| `published_at` | Timestamp | Original publish date |
+| `likes` | Integer | Engagement count |
+| `comments` | Integer | Comment count |
+| `earnings` | Decimal | Revenue from post (if available) |
+| `taxonomy_concepts` | JSON | 6-concept classification |
+
+**Taxonomy Integration**: See `taxonomy_dimensions` collection for concept definitions.
+
+### 3. scheduled_posts
+
+**Purpose**: Cross-platform post queue
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `creator_profile_id` | M2O | Target platform |
+| `media_id` | M2O (scraped_media) | Media to publish |
+| `scheduled_for` | Timestamp | Publish time |
+| `status` | String | `pending`, `publishing`, `published`, `failed` |
+| `caption` | Text | AI-generated or user-edited caption |
+| `platform_specific_config` | JSON | Platform options (hashtags, visibility, etc.) |
+| `published_at` | Timestamp | Actual publish time |
+| `error_message` | Text | Failure details |
+
+**Worker Integration**: The `post_scheduler` worker polls this collection every 60s for `pending` posts where `scheduled_for <= NOW()`.
+
+### 4. media_jobs
+
+**Purpose**: BullMQ job tracking for media operations
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `job_type` | String | `scrape_profile`, `watermark`, `teaser`, `publish_post` |
+| `queue_name` | String | BullMQ queue name |
+| `bull_job_id` | String | BullMQ job ID |
+| `status` | String | `queued`, `active`, `completed`, `failed` |
+| `payload` | JSON | Job parameters |
+| `result` | JSON | Job output data |
+| `error` | Text | Failure message |
+| `created_at` | Timestamp | Job creation time |
+| `started_at` | Timestamp | Job start time |
+| `completed_at` | Timestamp | Job completion time |
+
+**Dashboard Polling**: Dashboard uses this collection to show real-time job progress.
+
+### 5. hitl_sessions
+
+**Purpose**: Human-in-the-loop login requests
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `creator_profile_id` | M2O | Platform requiring login |
+| `platform` | String | Platform name |
+| `status` | String | `pending`, `completed`, `expired`, `failed` |
+| `requested_at` | Timestamp | HITL trigger time |
+| `completed_at` | Timestamp | User login completion |
+| `notes` | Text | Error details |
+
+**Trigger**: Created when scraping fails due to missing cookies. See [Browser Extension](/integrations/browser-extension) for HITL flow.
+
+### 6. platform_sessions
+
+**Purpose**: Encrypted browser cookies for automated login
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `creator_profile_id` | M2O | Creator account |
+| `platform` | String | Platform name |
+| `cookies` | JSON | Encrypted cookie array (AES-256-GCM) |
+| `user_agent` | String | Browser user agent |
+| `captured_at` | Timestamp | Cookie capture time |
+| `expires_at` | Timestamp | Estimated expiration |
+| `last_used_at` | Timestamp | Last Stagehand injection |
+
+**Security**: Cookies encrypted with same `credentialsCrypto.js` module as `creator_profiles.credentials`.
+
+### 7. taxonomy_dimensions
+
+**Purpose**: 6 super-concept content classification system
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `concept_name` | String | Dimension name (e.g., "Intimacy Level") |
+| `description` | Text | Concept definition |
+| `display_order` | Integer | UI sort order |
+
+**Current Dimensions** (from README):
+
+1. Intimacy Level
+2. Production Quality
+3. Content Type
+4. Audience Appeal
+5. Platform Fit
+6. Engagement Potential
+
+### 8. taxonomy_mapping
+
+**Purpose**: 3,208 classified tags across 6 concepts
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `tag` | String | Raw tag (e.g., "lingerie") |
+| `dimension_id` | M2O (taxonomy_dimensions) | Parent concept |
+| `weight` | Decimal | Classification confidence (0-1) |
+| `aliases` | JSON | Alternative tag spellings |
+
+**AI Classification**: The `taxonomy-tag` Action Runner flow uses this mapping to auto-classify new content.
+
+### 9. fan_profiles
+
+**Purpose**: Fan engagement data
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `creator_profile_id` | M2O | Creator account |
+| `platform_fan_id` | String | External fan ID |
+| `username` | String | Fan username |
+| `engagement_score` | Integer | Calculated engagement metric |
+| `total_spent` | Decimal | Total revenue from fan |
+| `last_interaction` | Timestamp | Most recent message/like |
+| `notes` | Text | Creator notes |
+
+### 10. action_flows
+
+**Purpose**: Action Runner flow definitions
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `slug` | String | Flow identifier (e.g., "scout-analyze") |
+| `name` | String | Display name |
+| `description` | Text | Flow purpose |
+| `steps` | JSON | Array of step configurations |
+| `active` | Boolean | Enable/disable flow |
+
+**Action Runner**: When agent outputs `[ACTION:slug:{"params"}]`, the action-runner plugin executes the matching flow.
+
+**Seeded Flows** (from README):
+
+- `scout-analyze`: Scrape URL + AI analysis
+- `taxonomy-tag`: Auto-classify content
+- `post-create`: Draft platform-specific post
+- `message-generate`: Fan engagement message
+- `memory-recall`: Search stored data + summarize
+- `media-process`: Queue media job (watermark, teaser, compress)
+
+### 11. agent_audits
+
+**Purpose**: Action execution logs
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `user_id` | M2O (directus_users) | User who triggered action |
+| `action_slug` | String | Flow slug |
+| `params` | JSON | Input parameters |
+| `status` | String | `success`, `error`, `miss` |
+| `result` | JSON | Flow output |
+| `error_message` | Text | Failure details |
+| `executed_at` | Timestamp | Execution time |
+
+**Debugging**: Use this collection to debug why actions failed or missed.
+
+## Directus Flows
+
+Directus Flows are low-code automation workflows triggered by:
+
+- **Webhooks**: External HTTP POST triggers
+- **Schedule**: Cron-based triggers
+- **Events**: Collection CRUD events (insert, update, delete)
+- **Manual**: Triggered via `trigger-flow` MCP tool or API
+
+### Example Flow: Platform Scraping
+
+**Flow Name**: `platform_scrape_flow`
+
+**Trigger**: Manual (via `trigger-flow` MCP tool or dashboard button)
+
+**Steps**:
+
+1. **stagehand_cookie_login**: Inject cookies from `platform_sessions` + navigate to creator profile
+2. **stagehand_extract**: Extract profile stats (followers, earnings, recent posts)
+3. **create-item** (Directus): Insert/update `scraped_media` records
+4. **stagehand_close**: End browser session
+
+**Seeding Script**: `/home/daytona/workspace/source/scripts/hitl/seed_platform_scrape_flow.mjs:1`
+
+### Creating Custom Flows
+
+Directus admin panel provides a visual flow builder:
+
+1. Navigate to `https://geniehelper.com/admin` → Flows
+2. Click "Create Flow"
+3. Select trigger type
+4. Add operations:
+   - **Webhook / HTTP Request**: Call external APIs
+   - **Run Script**: Execute Node.js code
+   - **Condition**: Branching logic
+   - **Create/Update/Delete Data**: Directus CRUD
+   - **Send Notification**: Email, push, webhook
+   - **Trigger Another Flow**: Flow chaining
+
+## Authentication & RBAC
+
+### User Roles
+
+Genie Helper uses Directus roles:
+
+| Role | Permissions |
+|------|-------------|
+| **Administrator** | Full access to all collections, flows, and settings |
+| **Creator** | CRUD on own data (filtered by `user_id` field) |
+| **Viewer** | Read-only access to public data |
+
+### RBAC Sync
+
+User creation in dashboard automatically syncs to Directus:
+
+**Sync Endpoint**: `/api/rbacSync` (webhook triggered by Directus user creation)
+
+**Flow**:
+
+1. User registers in dashboard `/register`
+2. Dashboard calls `/api/register` (proxy to Directus `/users` with admin token)
+3. Directus creates user + triggers RBAC sync webhook
+4. Sync webhook creates `user_personas` collection record
+5. User can now log in and access dashboard
+
+**Related Files**:
+
+- `/home/daytona/workspace/source/server/endpoints/api/register.js:1`
+- `/home/daytona/workspace/source/server/endpoints/api/rbacSync.js:1`
+
+### JWT Tokens
+
+Directus uses JWT for authentication:
+
+- **Access Token**: Short-lived (15 min), used for API requests
+- **Refresh Token**: Long-lived (7 days), used to renew access token
+
+**Dashboard Storage**:
+
+- Access token: `localStorage.getItem('directus_token')`
+- Refresh token: Auto-refreshed via Directus SDK
+
+**Admin Token**: Server-side operations use `DIRECTUS_ADMIN_TOKEN` env var for elevated permissions.
+
+## API Proxy
+
+Production traffic routes through nginx proxy:
+
+**Nginx Config** (Plesk):
+
+```nginx
+location /api/directus/ {
+    proxy_pass http://127.0.0.1:8055/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
+
+**Dashboard API Client**:
+
+```javascript
+// dashboard/src/utils/api.js
+import axios from 'axios';
+
+const directusApi = axios.create({
+  baseURL: '/api/directus',
+  headers: {
+    Authorization: `Bearer ${localStorage.getItem('directus_token')}`
+  }
+});
+
+export const getScheduledPosts = () => 
+  directusApi.get('/items/scheduled_posts?filter[status][_eq]=pending');
+```
+
+## Environment Variables
+
+Directus requires these env vars:
+
+| Variable | Description |
+|----------|-------------|
+| `DB_CLIENT` | Database type (`pg` for PostgreSQL) |
+| `DB_HOST` | Database host |
+| `DB_PORT` | Database port (5432) |
+| `DB_DATABASE` | Database name |
+| `DB_USER` | Database user |
+| `DB_PASSWORD` | Database password |
+| `KEY` | Directus encryption key (32+ chars) |
+| `SECRET` | JWT signing secret (32+ chars) |
+| `ADMIN_EMAIL` | Admin user email |
+| `ADMIN_PASSWORD` | Admin user password |
+| `PUBLIC_URL` | Public-facing URL (https://geniehelper.com) |
+| `CONTENT_SECURITY_POLICY_DIRECTIVES__FRAME_ANCESTORS` | Allowed iframe parents |
+| `DIRECTUS_ADMIN_TOKEN` | Static admin token for server-side API calls |
+
+## Debugging
+
+### Check Directus Logs
+
+```bash
+pm2 logs agentx-cms --lines 50
+```
+
+### Restart Directus
+
+```bash
+pm2 restart agentx-cms
+```
+
+### Query Collections via CLI
+
+```bash
+curl -H "Authorization: Bearer $DIRECTUS_ADMIN_TOKEN" \
+  https://geniehelper.com/api/directus/items/media_jobs?limit=5
+```
+
+### Access Admin Panel
+
+**URL**: `https://geniehelper.com/admin`
+
+**Credentials**:
+
+- Email: `admin@geniehelper.com`
+- Password: (see README admin credentials section)
+
+**Features**:
+
+- Browse collections
+- Edit records
+- View flows
+- Monitor activity logs
+- Manage users and roles
+
+## Performance Tips
+
+### Enable Caching
+
+Directus supports Redis caching for improved performance:
+
+**Env Vars**:
+
+```bash
+CACHE_ENABLED=true
+CACHE_STORE=redis
+REDIS=redis://localhost:6379
+```
+
+### Optimize Queries
+
+Use `fields` parameter to reduce payload size:
+
+```javascript
+// ❌ Bad: Fetches all fields + relationships
+api.get('/items/scraped_media');
+
+// ✅ Good: Only fetch needed fields
+api.get('/items/scraped_media?fields=id,caption,likes,published_at');
+```
+
+### Indexed Fields
+
+Ensure frequently queried fields have database indexes:
+
+- `creator_profiles.user_id`
+- `scraped_media.creator_profile_id`
+- `scheduled_posts.scheduled_for`
+- `media_jobs.status`
+- `platform_sessions.platform`
+
+## Related Documentation
+
+- [Browser Extension](/integrations/browser-extension) - Cookie capture for platform authentication
+- [Stagehand Automation](/integrations/stagehand) - Browser automation workflows
+- [Platform Connections](/integrations/platform-connections) - Managing creator credentials
