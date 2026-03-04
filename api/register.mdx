@@ -1,0 +1,105 @@
+---
+title: Registration API
+description: Public registration endpoint with invite validation
+---
+
+## POST /api/register
+
+Public endpoint for user registration with invite code validation.
+
+### Authentication
+
+No authentication required (public endpoint).
+
+### Request Body
+
+<ParamField path="email" type="string" required>
+  User email address
+</ParamField>
+
+<ParamField path="password" type="string" required>
+  User password (minimum 8 characters recommended)
+</ParamField>
+
+<ParamField path="firstName" type="string">
+  User's first name
+</ParamField>
+
+<ParamField path="inviteCode" type="string" required>
+  Valid invite code from AnythingLLM invite system
+</ParamField>
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  Whether registration was successful
+</ResponseField>
+
+<ResponseField name="userId" type="string">
+  Created Directus user ID (on success)
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Error message (on failure)
+</ResponseField>
+
+### Example
+
+```bash cURL
+curl -X POST http://localhost:3001/api/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "creator@example.com",
+    "password": "SecurePass123",
+    "firstName": "Jane",
+    "inviteCode": "ALPHA-2026"
+  }'
+```
+
+<Accordion title="Example Response">
+```json
+{
+  "ok": true,
+  "userId": "abc123-def456-ghi789"
+}
+```
+</Accordion>
+
+## Registration Flow
+
+<Steps>
+  <Step title="Validate invite code">
+    System checks AnythingLLM invite table to verify code is valid and unused
+  </Step>
+  
+  <Step title="Create Directus user">
+    User account created with admin token (bypasses public access restrictions)
+  </Step>
+  
+  <Step title="Mark invite as used">
+    Invite code status updated to prevent reuse
+  </Step>
+  
+  <Step title="Return credentials">
+    User ID returned for immediate login flow
+  </Step>
+</Steps>
+
+## Error Codes
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | Missing required fields | email, password, or inviteCode not provided |
+| 400 | Invalid invite code | Code doesn't exist or already used |
+| 409 | Email already exists | User with this email already registered |
+| 500 | Server misconfiguration | DIRECTUS_ADMIN_TOKEN not configured |
+
+## Implementation
+
+Source: `server/endpoints/api/register.js`
+
+The registration endpoint uses Directus admin token to create users, allowing public registration without exposing Directus public access permissions.
+
+<Card title="Authentication" icon="key" href="/api/authentication">
+  Learn about JWT authentication after registration
+</Card>

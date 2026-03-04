@@ -1,0 +1,213 @@
+---
+title: Usage Tracking API
+description: Plan usage monitoring and tier limit enforcement
+---
+
+## Overview
+
+The usage tracking system monitors creator activity against tier limits and enforces subscription boundaries server-side.
+
+## GET /api/usage
+
+Retrieve usage statistics for authenticated user.
+
+### Authentication
+
+Requires Directus JWT token.
+
+### Response
+
+<ResponseField name="tier" type="string">
+  Current pricing tier: `starter`, `creator`, `pro`, or `studio`
+</ResponseField>
+
+<ResponseField name="limits" type="object">
+  Tier limits for all tracked operations
+</ResponseField>
+
+<ResponseField name="usage" type="object">
+  Current usage counts for billing period
+</ResponseField>
+
+<ResponseField name="remaining" type="object">
+  Remaining capacity (limit - usage) for each operation
+</ResponseField>
+
+### Example
+
+```bash cURL
+curl http://localhost:3001/api/usage \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+```
+
+<Accordion title="Example Response">
+```json
+{
+  "tier": "creator",
+  "limits": {
+    "posts_ai_assisted": 30,
+    "posts_published": 90,
+    "scheduled_queue_size": -1,
+    "platforms_connected": 3,
+    "taxonomy_ai_calls": 75,
+    "watermark_ops": -1,
+    "ai_clip_ops": 10,
+    "thumbnail_ops": -1,
+    "team_seats": 1
+  },
+  "usage": {
+    "posts_ai_assisted": 12,
+    "posts_published": 45,
+    "taxonomy_ai_calls": 23,
+    "ai_clip_ops": 3
+  },
+  "remaining": {
+    "posts_ai_assisted": 18,
+    "posts_published": 45,
+    "taxonomy_ai_calls": 52,
+    "ai_clip_ops": 7
+  }
+}
+```
+</Accordion>
+
+## POST /api/usage/increment
+
+Increment usage counter for a specific operation.
+
+### Authentication
+
+Requires Directus JWT token or shared secret.
+
+### Request Body
+
+<ParamField path="operation" type="string" required>
+  Operation name (e.g., `posts_ai_assisted`, `taxonomy_ai_calls`)
+</ParamField>
+
+<ParamField path="amount" type="number">
+  Increment amount (default: 1)
+</ParamField>
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  Whether increment succeeded
+</ResponseField>
+
+<ResponseField name="newValue" type="number">
+  Updated usage count
+</ResponseField>
+
+<ResponseField name="limitReached" type="boolean">
+  Whether user has hit tier limit
+</ResponseField>
+
+### Example
+
+```bash cURL
+curl -X POST http://localhost:3001/api/usage/increment \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "operation": "posts_ai_assisted",
+    "amount": 1
+  }'
+```
+
+<Accordion title="Example Response">
+```json
+{
+  "ok": true,
+  "newValue": 13,
+  "limitReached": false
+}
+```
+</Accordion>
+
+## Tracked Operations
+
+### Operation Keys
+
+| Key | Description | Limit Type |
+|-----|-------------|------------|
+| `posts_ai_assisted` | AI caption/post generation | Monthly |
+| `posts_published` | Cross-platform publishing | Monthly |
+| `scheduled_queue_size` | Pending scheduled posts | Concurrent |
+| `platforms_connected` | Active platform connections | Concurrent |
+| `taxonomy_ai_calls` | Content classification calls | Monthly |
+| `watermark_ops` | Image/video watermarking | Monthly |
+| `ai_clip_ops` | Video teaser generation | Monthly |
+| `thumbnail_ops` | Thumbnail extraction | Monthly |
+| `team_seats` | Team member accounts | Concurrent |
+
+### Limit Value Convention
+
+- **Positive number**: Hard limit enforced
+- **`-1`**: Unlimited (no enforcement)
+- **`0`**: Feature disabled for tier
+
+## Usage Reset Schedule
+
+**Monthly counters** reset on the 1st of each month at 00:00 UTC:
+- `posts_ai_assisted`
+- `posts_published`
+- `taxonomy_ai_calls`
+- `watermark_ops`
+- `ai_clip_ops`
+- `thumbnail_ops`
+
+**Concurrent counters** track current state (no reset):
+- `scheduled_queue_size`
+- `platforms_connected`
+- `team_seats`
+
+## Enforcement Points
+
+Usage limits enforced at:
+
+1. **API endpoints**: `/api/captions`, `/api/queue`, `/api/genie/stream-chat`
+2. **Media worker**: Job creation in `media-worker/index.js`
+3. **Dashboard UI**: Proactive warnings before limit reached
+4. **Post scheduler**: Queue size check before adding posts
+
+## Upgrade Prompts
+
+When user hits limit:
+
+```json
+{
+  "error": "Usage limit reached",
+  "operation": "posts_ai_assisted",
+  "limit": 30,
+  "current": 30,
+  "upgradeUrl": "/pricing",
+  "recommendedTier": "pro"
+}
+```
+
+Dashboard shows upgrade banner with next tier benefits.
+
+## Implementation
+
+**Source**: `server/endpoints/api/usage.js`
+
+Usage data stored in `user_personas` collection:
+- Fields: `{operation}_used` and `{operation}_limit`
+- Server-side validation on every increment
+- Atomic updates to prevent race conditions
+
+<Note>
+  Usage tracking is essential for monetization. All AI/media operations must call `/api/usage/increment` before execution.
+</Note>
+
+## Related Endpoints
+
+<CardGroup cols={2}>
+  <Card title="Pricing Tiers" icon="dollar-sign" href="/guides/pricing-tiers">
+    Detailed tier limits and pricing structure
+  </Card>
+  <Card title="User Profile" icon="user" href="/api/user">
+    View and update user tier assignment
+  </Card>
+</CardGroup>

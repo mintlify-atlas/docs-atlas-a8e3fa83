@@ -1,0 +1,177 @@
+---
+title: Admin API
+description: Administrative endpoints for user impersonation and management
+---
+
+## Overview
+
+Admin endpoints provide elevated privileges for platform administrators, including user impersonation for support and debugging.
+
+## POST /api/admin/impersonate
+
+Generate impersonation token to access another user's account.
+
+### Authentication
+
+Requires admin-level Directus JWT token.
+
+### Request Body
+
+<ParamField path="userId" type="string" required>
+  Directus user ID to impersonate
+</ParamField>
+
+<ParamField path="duration" type="number">
+  Token duration in seconds (default: 3600)
+</ParamField>
+
+### Response
+
+<ResponseField name="token" type="string">
+  Temporary JWT token for impersonated user
+</ResponseField>
+
+<ResponseField name="expiresAt" type="string">
+  ISO 8601 timestamp when token expires
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  Impersonated user's profile data
+</ResponseField>
+
+### Example
+
+```bash cURL
+curl -X POST http://localhost:3001/api/admin/impersonate \
+  -H "Authorization: Bearer ADMIN_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "user-abc-123",
+    "duration": 1800
+  }'
+```
+
+<Accordion title="Example Response">
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expiresAt": "2026-03-04T13:30:00Z",
+  "user": {
+    "id": "user-abc-123",
+    "email": "creator@example.com",
+    "first_name": "Jane",
+    "role": "creator"
+  }
+}
+```
+</Accordion>
+
+## Impersonation Use Cases
+
+### Customer Support
+
+View user's account as they see it:
+1. User reports dashboard issue
+2. Admin generates impersonation token
+3. Admin accesses user's session in separate browser tab
+4. Investigate issue in live environment
+
+### Debugging
+
+Reproduce tier-specific behavior:
+- Test feature availability for different tiers
+- Verify usage limit enforcement
+- Debug permission issues
+
+### Demo Accounts
+
+Create pre-configured demo environments:
+- Generate tokens for demo accounts
+- Share with prospects during sales calls
+- Automatically expire after demo period
+
+## Security Considerations
+
+<Warning>
+  Impersonation grants full access to user's account. Use only when necessary and maintain audit logs.
+</Warning>
+
+### Audit Trail
+
+All impersonation actions logged to `agent_audits` collection:
+
+```json
+{
+  "action": "admin_impersonate",
+  "admin_user_id": "admin-123",
+  "target_user_id": "user-456",
+  "duration_seconds": 1800,
+  "ip_address": "192.168.1.100",
+  "user_agent": "Mozilla/5.0...",
+  "timestamp": "2026-03-04T12:00:00Z"
+}
+```
+
+### Token Restrictions
+
+- **Short-lived**: Default 1 hour expiration
+- **Single-use recommended**: Generate new token for each session
+- **IP binding**: Optional IP address validation
+- **Revocation**: Tokens invalidated on user password change
+
+### Admin Permissions
+
+Only users with Directus role `administrator` can impersonate:
+
+```javascript
+// Permission check in server/endpoints/api/impersonate.js
+if (req.user.role.name !== 'administrator') {
+  return res.status(403).json({ error: 'Forbidden' });
+}
+```
+
+## Dashboard Integration
+
+Admin panel at `/admin` includes impersonation UI:
+
+1. **User Search**: Find users by email/name
+2. **Quick Actions**: One-click impersonation button
+3. **Active Sessions**: View currently impersonated users
+4. **Session History**: Past impersonation events
+
+### View-As Mode
+
+`/view-as` route enables impersonation from dashboard:
+
+```javascript
+// Dashboard route: src/pages/ViewAs/index.jsx
+<Route path="/view-as/:userId" element={<ViewAsMode />} />
+```
+
+Session stored in `sessionStorage` (not `localStorage`) to prevent persistence across browser restarts.
+
+## Implementation
+
+**Source**: `server/endpoints/api/impersonate.js`
+
+Impersonation flow:
+1. Verify admin credentials via Directus `/users/me`
+2. Fetch target user data
+3. Generate temporary JWT with `imp_` prefix
+4. Log action to `agent_audits`
+5. Return token for client storage
+
+<Info>
+  Impersonation tokens use same JWT secret as regular auth but include `impersonator_id` claim for audit tracking.
+</Info>
+
+## Related Features
+
+<CardGroup cols={2}>
+  <Card title="User Management" icon="users" href="/guides/user-management">
+    RBAC sync and user administration
+  </Card>
+  <Card title="Security" icon="shield" href="/guides/security">
+    Security best practices and audit logging
+  </Card>
+</CardGroup>

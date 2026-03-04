@@ -297,9 +297,9 @@ const enrichedMessage = nodeContext
 - **Cookie-First**: "Always prefer cookie authentication over username/password."
 - **Action Emission**: "Use [ACTION:slug:params] tags to trigger pre-built flows."
 
-<Warning>
-**Production TODO**: Move system prompt to `system_config` collection so it can be updated without redeploying. Current: hardcoded in JS.
-</Warning>
+<Note>
+The system prompt is currently hardcoded in `server/utils/boot/workspaceProvisioner.js`. Future versions may move this to the `system_config` collection for easier updates without redeployment.
+</Note>
 
 ## Admin Credentials
 

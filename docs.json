@@ -87,7 +87,12 @@
               "api/credentials",
               "api/queue",
               "api/captions",
-              "api/genie-chat"
+              "api/genie-chat",
+              "api/register",
+              "api/onboarding",
+              "api/user",
+              "api/usage",
+              "api/admin"
             ]
           },
           {

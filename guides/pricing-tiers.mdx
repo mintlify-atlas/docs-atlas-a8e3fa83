@@ -205,7 +205,7 @@ if (usage.posts_ai_assisted >= usage.tier_limits.posts_ai_assisted) {
 ## Upgrade Flow
 
 1. **User initiates upgrade**: From pricing page or usage limit warning
-2. **Payment processing**: (Integration TBD — Stripe/Paddle)
+2. **Payment processing**: Payment gateway integration required
 3. **Tier update**: PATCH `user_personas.pricing_tier`
 4. **Usage reset**: Clear current period counters
 5. **Immediate access**: New limits take effect instantly
